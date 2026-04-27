@@ -1,0 +1,17 @@
+chromadb/
+bm25_index/
+logs/
+__pycache__/
+*.pyc
+index_manifest.json
+config.yaml
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Deployment scripts (contain local paths)
+start.bat
+start-reranker.ps1
+install_services.bat

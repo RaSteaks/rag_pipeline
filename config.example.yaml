@@ -1,0 +1,82 @@
+# RAG Pipeline Configuration Example
+# Copy to config.yaml and modify for your environment
+
+server:
+  host: "127.0.0.1"
+  port: 8900
+
+embedding:
+  endpoint: "http://127.0.0.1:8080"
+  model: "Qwen3-Embedding-8B"
+  timeout_seconds: 60
+  batch_size: 32
+
+reranker:
+  enabled: true
+  endpoint: "http://127.0.0.1:8081"
+  model: "Qwen3-Reranker-4B-Q6_K"
+  timeout_seconds: 20
+  max_candidates: 20
+  fallback_to_rrf: true
+
+indexes:
+  chroma_path: "D:\\Openclaw\\chromadb"
+  bm25_path: "D:\\Openclaw\\rag_pipeline\\bm25_index"
+  manifest_path: "D:\\Openclaw\\rag_pipeline\\index_manifest.json"
+
+retrieval:
+  vector_top_k: 30
+  bm25_top_k: 30
+  rrf_top_k: 20
+  final_top_k: 5
+  rrf_k: 60
+  max_chunks_per_doc: 2
+
+chunking:
+  chunk_size_tokens: 800
+  chunk_overlap_tokens: 120
+  min_chunk_tokens: 80
+
+knowledge_sources:
+  - name: "documents"
+    path: "/path/to/documents"
+    enabled: true
+    recursive: true
+    weight: 1.0
+    file_types: [".md", ".pdf", ".docx", ".html", ".htm", ".txt"]
+
+  - name: "color_science_documents"
+    path: "/path/to/color_science_documents"
+    enabled: true
+    recursive: true
+    weight: 1.15
+    file_types: [".md", ".pdf", ".docx", ".html", ".htm", ".txt"]
+
+  - name: "workspace_memory"
+    path: "/path/to/workspace/memory"
+    enabled: true
+    recursive: true
+    weight: 0.9
+    file_types: [".md", ".txt", ".json", ".yaml", ".yml"]
+
+exclude:
+  dirs:
+    - ".git"
+    - "__pycache__"
+    - "node_modules"
+    - ".venv"
+    - "venv"
+    - "dist"
+    - "build"
+    - "chromadb"
+    - "models"
+  files:
+    - "*.tmp"
+    - "*.log"
+    - "*.lock"
+    - "~$*.docx"
+
+watchdog:
+  enabled: true
+  debounce_seconds: 2
+  batch_interval_seconds: 10
