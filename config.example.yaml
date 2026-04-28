@@ -20,9 +20,9 @@ reranker:
   fallback_to_rrf: true
 
 indexes:
-  chroma_path: "D:\\Openclaw\\chromadb"
-  bm25_path: "D:\\Openclaw\\rag_pipeline\\bm25_index"
-  manifest_path: "D:\\Openclaw\\rag_pipeline\\index_manifest.json"
+  chroma_path: "C:\\Openclaw\\chromadb"
+  bm25_path: "C:\\Openclaw\\rag_pipeline\\bm25_index"
+  manifest_path: "C:\\Openclaw\\rag_pipeline\\index_manifest.json"
 
 retrieval:
   vector_top_k: 30
@@ -45,13 +45,7 @@ knowledge_sources:
     weight: 1.0
     file_types: [".md", ".pdf", ".docx", ".html", ".htm", ".txt"]
 
-  - name: "color_science_documents"
-    path: "/path/to/color_science_documents"
-    enabled: true
-    recursive: true
-    weight: 1.15
-    file_types: [".md", ".pdf", ".docx", ".html", ".htm", ".txt"]
-
+  
   - name: "workspace_memory"
     path: "/path/to/workspace/memory"
     enabled: true
