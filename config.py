@@ -73,12 +73,22 @@ class WatchdogConfig(BaseModel):
 
 class ImageDescriptionConfig(BaseModel):
     enabled: bool = False
-    backend: str = "local"  # "local" or "server"
+    backend: str = "local"  # "local" (llama-cpp-python) or "server" (llama.cpp :8082) or "api" (OpenRouter/OpenAI)
     endpoint: str = "http://127.0.0.1:8082"
     model_path: str = ""
+    output_path: str = ""  # 新增
     dpi: int = 150
     max_pages_per_pdf: int = 50
     prompt: str = ""
+    # API backend config (only used when backend="api")
+    # api_key: OpenRouter key (sk-or-v1-xxx) or OpenAI key (sk-xxx)
+    api_key: str = ""
+    # api_model: model identifier
+    #   OpenRouter: openai/gpt-4o, google/gemini-2.5-flash, qwen/qwen-2.5-vl-72b-instruct
+    #   OpenAI: gpt-4o, gpt-4o-mini
+    api_model: str = "openai/gpt-4o"
+    # api_base_url: https://openrouter.ai/api/v1 or https://api.openai.com/v1
+    api_base_url: str = "https://openrouter.ai/api/v1"
 
 
 class AppConfig(BaseModel):

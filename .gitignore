@@ -14,6 +14,7 @@ build/
 # Deployment scripts (contain local paths)
 start.bat
 start-reranker.ps1
+start-vision.ps1
 install_services.bat
 
 # PDF rendered images (generated, large)

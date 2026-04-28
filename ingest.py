@@ -230,15 +230,8 @@ class IncrementalIndexer:
         log.info(f"Generating image descriptions for {filepath}")
         
         try:
-            descriptions = describe_pdf_images(
-                pdf_path=filepath,
-                output_dir=str(Path(self._config.indexes.chroma_path).parent / "pdf_images"),
-                endpoint=cfg.endpoint,
-                use_local=(cfg.backend == "local"),
-                model_path=cfg.model_path,
-                dpi=cfg.dpi,
-                max_pages=cfg.max_pages_per_pdf,
-            )
+            # All vision config params (including output_path) are now loaded internally
+            descriptions = describe_pdf_images(pdf_path=filepath)
         except Exception as e:
             log.warning(f"Image description failed for {filepath}: {e}")
             return

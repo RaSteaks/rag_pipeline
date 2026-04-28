@@ -150,20 +150,55 @@ python cli.py stats
 
 ### Image Description (实验性)
 
-PDF 中的图表和图片内容可以通过 InternVL2.5-4B 视觉模型生成文字描述，作为额外 chunk 索引。
-默认关闭，需在 `config.yaml` 中启用：
+PDF 中的图表和图片内容可以通过视觉模型生成文字描述，作为额外 chunk 索引。
+默认关闭，需在 `config.yaml` 中启用。
 
+#### 三种后端
+
+**1. 本地模型（local）**— 按需加载，不常驻
 ```yaml
 image_description:
   enabled: true
-  backend: "local"        # "local" (llama-cpp-python) 或 "server" (llama.cpp :8082)
-  model_path: "D:\\models\\InternVL2_5-4B.Q5_K_M.gguf"
+  backend: "local"
+  model_path: "D:\\models\\InternVL2_5-4B.Q5_K_M.gguf"  # 本地 GGUF 模型
   dpi: 150
   max_pages_per_pdf: 50
 ```
+- 索引时加载模型（~4GB 内存），完成后释放
+- 每页约 4-6 秒（CPU），500 页约 30-50 分钟
+- 无需额外服务进程
 
-**注意**：此功能仅在索引时调用，不影响查询速度。模型加载到内存约 4GB，
-描述完成后释放。500 页 PDF 约需 30-50 分钟（CPU 推理）。
+**2. llama.cpp 服务（server）**— 需要常驻服务
+```yaml
+image_description:
+  enabled: true
+  backend: "server"
+  endpoint: "http://127.0.0.1:8082"
+```
+- 启动：`llama-server -m InternVL2.5-4B.Q5_K_M.gguf --host 127.0.0.1 --port 8082 -ngl 0 -t 8`
+- 常驻内存 ~4GB，但无需重复加载
+
+**3. API（OpenRouter / OpenAI）**— 无需本地模型，按量付费
+```yaml
+image_description:
+  enabled: true
+  backend: "api"
+  api_key: "sk-or-v1-xxx"           # 你的 API Key
+  api_model: "openai/gpt-4o"        # 模型名
+  api_base_url: "https://openrouter.ai/api/v1"
+```
+
+推荐模型：
+
+| 提供商 | api_model | 价格 | 图表理解 |
+|--------|-----------|------|---------|
+| OpenRouter | `openai/gpt-4o` | ~$2.5/1M tokens | 最强 |
+| OpenRouter | `google/gemini-2.5-flash` | ~$0.15/1M tokens | 强 |
+| OpenRouter | `qwen/qwen-2.5-vl-72b-instruct` | ~$0.4/1M tokens | 中 |
+| OpenAI | `gpt-4o-mini` | ~$0.15/1M tokens | 中 |
+| 本地 | InternVL2.5-4B Q5_K_M | 免费 | 中 |
+
+**注意**：此功能仅在索引时调用，不影响查询速度。
 
 ## 降级机制
 

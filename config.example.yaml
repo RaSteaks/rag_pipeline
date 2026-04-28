@@ -77,8 +77,15 @@ watchdog:
 
 image_description:
   enabled: false
-  backend: "local"  # "local" (llama-cpp-python) or "server" (llama.cpp on :8082)
+  backend: "local"  # "local" / "server" / "api"
   endpoint: "http://127.0.0.1:8082"
   model_path: "/path/to/InternVL2.5-4B.Q5_K_M.gguf"
   dpi: 150
   max_pages_per_pdf: 50
+  # API backend (only used when backend="api")
+  # api_key: OpenRouter sk-or-v1-xxx or OpenAI sk-xxx
+  api_key: ""
+  # api_model: openai/gpt-4o, google/gemini-2.5-flash, qwen/qwen-2.5-vl-72b-instruct
+  api_model: "openai/gpt-4o"
+  # api_base_url: https://openrouter.ai/api/v1 or https://api.openai.com/v1
+  api_base_url: "https://openrouter.ai/api/v1"
