@@ -54,7 +54,7 @@ uv pip install -e .
 
 ### 启动服务
 
-**1. Embedding 服务** (GPU)
+**1. Embedding 服务** 
 
 ```powershell
 llama-server.exe -m /path/to/embedding-model.gguf `
@@ -62,7 +62,7 @@ llama-server.exe -m /path/to/embedding-model.gguf `
   --embedding --pooling last -ngl 32 -t 8
 ```
 
-**2. Reranker 服务** (CPU, 必须带 `--rerank` 参数)
+**2. Reranker 服务** (必须带 `--rerank` 参数)
 
 ```powershell
 llama-server.exe -m /path/to/reranker-model.gguf `
@@ -133,8 +133,8 @@ python cli.py stats
 
 | 文件 | 说明 |
 |------|------|
-| `config.yaml` | 生产配置（含路径，不进 Git） |
-| `config.example.yaml` | 配置模板（无路径，进 Git） |
+| `config.yaml` | 生产配置 |
+| `config.example.yaml` | 配置模板 |
 | `config.py` | Pydantic 配置校验，所有默认值为空，强制从 YAML 读取 |
 | `parsers.py` | 文档解析器，支持 MD/PDF/DOCX/HTML/IPynb/TXT/PY/JSON/YAML |
 | `chunker.py` | 语义分块器，按 markdown 标题递归切分，含截断保护 |
