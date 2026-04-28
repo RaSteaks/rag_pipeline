@@ -15,3 +15,7 @@ build/
 start.bat
 start-reranker.ps1
 install_services.bat
+
+# PDF rendered images (generated, large)
+*_images/
+page_*.png

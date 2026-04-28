@@ -50,8 +50,7 @@ class HybridRetriever:
             "corpus_size": self.bm25.corpus_size,
             "doc_len": list(self.bm25.doc_len),
             "avgdl": self.bm25.avgdl,
-            "df": dict(self.bm25.df),
-            "idf": dict(self.bm25.idf) if hasattr(self.bm25, 'idf') else {},
+            "idf": {str(k): float(v) for k, v in self.bm25.idf.items()} if hasattr(self.bm25, 'idf') else {},
             "docs": self.bm25_docs,
             "ids": self.bm25_ids,
         }

@@ -74,3 +74,11 @@ watchdog:
   enabled: true
   debounce_seconds: 2
   batch_interval_seconds: 10
+
+image_description:
+  enabled: false
+  backend: "local"  # "local" (llama-cpp-python) or "server" (llama.cpp on :8082)
+  endpoint: "http://127.0.0.1:8082"
+  model_path: "/path/to/InternVL2.5-4B.Q5_K_M.gguf"
+  dpi: 150
+  max_pages_per_pdf: 50

@@ -22,8 +22,9 @@ from config import get_config, reload_config
 from logger import setup_logger
 log = setup_logger("rag")
 from parsers import parse_file, SUPPORT_EXTS_WITH_CONFIG
-from chunker import chunk_document
+from chunker import chunk_document, Chunk
 from vector_store import RAGVectorStore
+import hashlib
 
 
 class IncrementalIndexer:
@@ -121,10 +122,15 @@ class IncrementalIndexer:
             try:
                 chunks = chunk_document(parsed.to_dict())
                 self.store.add_chunks([c.to_dict() for c in chunks])
+                
+                # Image description for PDFs (if enabled)
+                if self._config.image_description.enabled and parsed.format == "pdf":
+                    self._describe_pdf_images(parsed, filepath)
+                
                 self.hash_cache[filepath] = new_hash
                 changed += 1
             except Exception as e:
-                print(f"Failed to index {filepath}: {e}")
+                log.error(f"Failed to index {filepath}: {e}")
                 errors += 1
 
         self._save_manifest()
@@ -208,6 +214,63 @@ class IncrementalIndexer:
         observer.start()
         log.info("File watcher started")
         return observer
+
+    def _describe_pdf_images(self, parsed_doc:dict, filepath: str):
+        """Generate image descriptions for a PDF and add as chunks."""
+        try:
+            from image_describer import describe_pdf_images
+        except ImportError:
+            log.warning("image_describer not available, skipping image descriptions")
+            return
+
+        cfg = self._config.image_description
+        if not cfg.enabled:
+            return
+
+        log.info(f"Generating image descriptions for {filepath}")
+        
+        try:
+            descriptions = describe_pdf_images(
+                pdf_path=filepath,
+                output_dir=str(Path(self._config.indexes.chroma_path).parent / "pdf_images"),
+                endpoint=cfg.endpoint,
+                use_local=(cfg.backend == "local"),
+                model_path=cfg.model_path,
+                dpi=cfg.dpi,
+                max_pages=cfg.max_pages_per_pdf,
+            )
+        except Exception as e:
+            log.warning(f"Image description failed for {filepath}: {e}")
+            return
+
+        # Add each description as a separate chunk
+        for desc in descriptions:
+            if not desc.description.strip():
+                continue
+            chunk = Chunk(
+                chunk_id=f"{parsed_doc['hash']}_img_{desc.page_num}",
+                source=parsed_doc['source'],
+                text=f"[Page {desc.page_num} 图像描述] {desc.description}",
+                meta={
+                    "hash": parsed_doc['hash'],
+                    "format": parsed_doc.get("format", ""),
+                    "position": desc.page_num,
+                    "total_chunks": parsed_doc.get("total_chunks", 0),
+                    "modified_at": parsed_doc.get("modified_at", 0),
+                    "title": parsed_doc.get("title", ""),
+                    "source_name": parsed_doc.get("source_name", ""),
+                    "relative_path": parsed_doc.get("relative_path", ""),
+                    "weight": parsed_doc.get("weight", 1.0),
+                    "content_hash": hashlib.sha256(desc.description.encode()).hexdigest()[:12],
+                    "is_image_description": True,
+                    "image_page": desc.page_num,
+                },
+            )
+            try:
+                self.store.add_chunks([chunk.to_dict()])
+                log.info(f"Added image description for page {desc.page_num}")
+            except Exception as e:
+                log.warning(f"Failed to index image description for page {desc.page_num}: {e}")
 
 
 class _WatchHandler(FileSystemEventHandler):

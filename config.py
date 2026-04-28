@@ -71,6 +71,16 @@ class WatchdogConfig(BaseModel):
     batch_interval_seconds: int = 10
 
 
+class ImageDescriptionConfig(BaseModel):
+    enabled: bool = False
+    backend: str = "local"  # "local" or "server"
+    endpoint: str = "http://127.0.0.1:8082"
+    model_path: str = ""
+    dpi: int = 150
+    max_pages_per_pdf: int = 50
+    prompt: str = ""
+
+
 class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
@@ -81,6 +91,7 @@ class AppConfig(BaseModel):
     knowledge_sources: List[KnowledgeSource] = []
     exclude: ExcludeConfig = ExcludeConfig()
     watchdog: WatchdogConfig = WatchdogConfig()
+    image_description: ImageDescriptionConfig = ImageDescriptionConfig()
 
 
 def load_config(path: str = "") -> AppConfig:

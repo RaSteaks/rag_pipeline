@@ -141,11 +141,29 @@ python cli.py stats
 | `vector_store.py` | ChromaDB 存储 + Embedding 向量化，分批容错（单条失败时跳过） |
 | `reranker.py` | Reranker 客户端，调用 llama.cpp `/v1/rerank` 端点，超时降级到 RRF |
 | `retriever.py` | 混合检索：向量+BM25→RRF 融合→Reranker 精排→多样性过滤 |
-| `ingest.py` | 增量索引（SHA256+manifest+watchdog）+ 全量重建 + 按源重建 |
+| `image_describer.py` | PDF 页面渲染 + 视觉模型描述（InternVL2.5-4B），按需调用，非常驻 |
+| `ingest.py` | 增量索引（SHA256+manifest+watchdog）+ 全量重建 + 按源重建 + 图片描述 |
 | `rag_service.py` | FastAPI 主服务，启动时检测 Embedding/Reranker 可用性 |
 | `cli.py` | CLI 工具（search/sync/stats），Windows UTF-8 兼容 |
 | `start.bat` | Windows 启动脚本（检查 Embedding → 启动 RAG API） |
 | `start-reranker.ps1` | Reranker 启动脚本（CPU, --rerank --pooling rank -ngl 0） |
+
+### Image Description (实验性)
+
+PDF 中的图表和图片内容可以通过 InternVL2.5-4B 视觉模型生成文字描述，作为额外 chunk 索引。
+默认关闭，需在 `config.yaml` 中启用：
+
+```yaml
+image_description:
+  enabled: true
+  backend: "local"        # "local" (llama-cpp-python) 或 "server" (llama.cpp :8082)
+  model_path: "D:\\models\\InternVL2_5-4B.Q5_K_M.gguf"
+  dpi: 150
+  max_pages_per_pdf: 50
+```
+
+**注意**：此功能仅在索引时调用，不影响查询速度。模型加载到内存约 4GB，
+描述完成后释放。500 页 PDF 约需 30-50 分钟（CPU 推理）。
 
 ## 降级机制
 
