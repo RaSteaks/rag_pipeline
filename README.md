@@ -113,7 +113,7 @@ python cli.py stats
 
 ## 配置
 
-编辑 `config.yaml`（参考 `config.example.yaml`）。**`config.yaml` 不进 Git。**
+编辑 `config.yaml`（参考 `config.example.yaml`）。
 
 | 配置项 | 说明 | 改后需重建？ |
 |--------|------|-------------|
