@@ -1,15 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Config
+config.yaml
+index_manifest.json
+
+# Local Indexes & Data
 chromadb/
 bm25_index/
+pdf_images/
+test_images/
+
+# Logs
+*.log
 logs/
-__pycache__/
-*.pyc
-index_manifest.json
-config.yaml
-.venv/
-venv/
-*.egg-info/
-dist/
-build/
+
+# Tests and temporary scripts
+test_*.py
 
 # Deployment scripts (contain local paths)
 start.bat
@@ -17,6 +28,6 @@ start-reranker.ps1
 start-vision.ps1
 install_services.bat
 
-# PDF rendered images (generated, large)
-*_images/
-page_*.png
+# OS
+.DS_Store
+Thumbs.db
