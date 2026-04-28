@@ -147,6 +147,8 @@ python cli.py stats
 | `start.bat` | Windows 启动脚本（检查 Embedding → 启动 RAG API） |
 | `start-reranker.ps1` | Reranker 启动脚本（CPU, --rerank --pooling rank -ngl 0） |
 
+#目前暂不支持图片识别，需要额外配置多模态大模型
+
 ## 降级机制
 
 - **Embedding 不可用** → 向量检索失败，RAG API 启动时警告，搜索返回空结果
