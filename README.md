@@ -148,7 +148,35 @@ python cli.py stats
 | `start.bat` | Windows 启动脚本（检查 Embedding → 启动 RAG API） |
 | `start-reranker.ps1` | Reranker 启动脚本（CPU, --rerank --pooling rank -ngl 0） |
 
-## 降级机制
+###  视觉索引机制 (Vision Indexing)
+
+本系统具备深度的“多模态理解”能力，允许将 PDF 中的非文本信息（如流程图、实验数据表、照片及扫描文本）转化为可搜索的文字索引。
+
+#### 工作流程
+1. **渲染 (Rendering)**: 系统使用 PyMuPDF 将 PDF 页面渲染为高清 PNG 图像（默认 150 DPI），存放在配置的 `output_path` 中。
+2. **描述 (Description)**: 图像被发送至视觉模型（如 InternVL2.5-4B）。模型根据预设的 `prompt` 对图片内容进行深度解析：
+   - 识别图表标题、坐标轴及趋势。
+   - 提取图片内嵌入的文字。
+   - 总结示意图的含义。
+3. **索引 (Indexing)**: 生成的描述文本被封装为一个特殊的 Chunk，带有 `is_image_description: true` 标记和原文关联元数据。
+4. **回溯 (Traceability)**: 每个搜索结果均包含 **Source PDF 路径** 和 **具体页码**。
+
+#### 启用与配置
+在 `config.yaml` 中根据需求配置后端：
+
+```yaml
+image_description:
+  enabled: true                    # 设为 true 开启
+  backend: "server"                # 可选: local / server / api
+  model_path: ".../models/..."      # GGUF模型路径
+  output_path: ".../rag/images"     # 图片渲染存放根目录
+  dpi: 150                         # 渲染清晰度
+  max_pages_per_pdf: 50            # 安全限制，防止大PDF耗时过久
+```
+
+
+
+## 降经机制
 
 - **Embedding 不可用** → 向量检索失败，RAG API 启动时警告，搜索返回空结果
 - **Reranker 不可用/超时** → 自动降级为 RRF 融合结果，日志输出 WARN
