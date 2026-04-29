@@ -1,221 +1,124 @@
-﻿"""Incremental indexer with SHA256 manifest and watchdog file monitoring.
-
-Supports three modes:
-  - full_sync(): Detect additions, modifications, deletions via SHA256 hash comparison
-  - rebuild_source(name): Rebuild index for a single knowledge source
-  - full_rebuild(): Delete all indexes and rebuild from scratch
-
-Config-driven: knowledge sources, exclusion rules, and file types all come from config.yaml.
-The manifest (index_manifest.json) persists file hashes for incremental updates.
-"""
-import json
-import threading
+import os
 import time
+import hashlib
+import threading
+import json
 from pathlib import Path
-from typing import Optional
-from fnmatch import fnmatch
-
+from typing import Optional, Dict, Any
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-from config import get_config, reload_config
 from logger import setup_logger
-log = setup_logger("rag")
+from config import get_config
 from parsers import parse_file, SUPPORT_EXTS_WITH_CONFIG
 from chunker import chunk_document, Chunk
-from vector_store import RAGVectorStore
-import hashlib
+from vector_store import VectorStore
 
+log = setup_logger("rag")
 
 class IncrementalIndexer:
-    def __init__(self, store: RAGVectorStore, config_override=None):
-        self._config = config_override or get_config()
-        self.store = store
-        self.hash_cache: dict = {}
+    def __init__(self):
+        self._config = get_config()
+        self.store = VectorStore(self._config)
+        self.manifest_path = Path("index_manifest.json")
+        self.hash_cache = self._load_manifest()
         self._lock = threading.Lock()
-        self._load_manifest()
+        self._observer: Optional[Observer] = None
 
-    @property
-    def manifest_path(self) -> Path:
-        return Path(self._config.indexes.manifest_path)
-
-    def _load_manifest(self):
-        """Load index manifest from disk."""
+    def _load_manifest(self) -> Dict[str, str]:
         if self.manifest_path.exists():
             try:
-                self.hash_cache = json.loads(self.manifest_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                log.info("Corrupt manifest, starting fresh")
-                self.hash_cache = {}
-        else:
-            self.hash_cache = {}
+                with open(self.manifest_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                log.error(f"Failed to load manifest: {e}")
+        return {}
 
     def _save_manifest(self):
-        """Persist manifest to disk."""
-        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        self.manifest_path.write_text(
-            json.dumps(self.hash_cache, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        try:
+            with open(self.manifest_path, "w", encoding="utf-8") as f:
+                json.dump(self.hash_cache, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            log.error(f"Failed to save manifest: {e}")
 
     def _should_exclude(self, path: Path) -> bool:
-        """Check if path matches exclusion rules."""
-        exclude = self._config.exclude
-
-        for dir_pattern in exclude.dirs:
-            for part in path.parts:
-                if fnmatch(part, dir_pattern):
-                    return True
-
-        for file_pattern in exclude.files:
-            if fnmatch(path.name, file_pattern):
+        path_str = str(path).replace('\\', '/')
+        # Check directories
+        for exc_dir in self._config.exclude.directories:
+            if f"/{exc_dir}/" in f"/{path_str}/":
                 return True
-
+        # Check patterns
+        for pattern in self._config.exclude.patterns:
+            if path.match(pattern):
+                return True
         return False
 
-    def _collect_files(self) -> set[str]:
-        """Collect all files from enabled knowledge sources."""
-        current_files = set()
-        for source in self._config.knowledge_sources:
-            if not source.enabled:
-                continue
-            sp = Path(source.path)
-            if not sp.exists():
-                continue
-            glob_fn = sp.rglob if source.recursive else sp.glob
-            for p in glob_fn("*"):
-                if p.is_file() and not self._should_exclude(p):
-                    if p.suffix.lower() in set(source.file_types):
-                        current_files.add(str(p.absolute()))
-        return current_files
+    def sync(self, source_name: Optional[str] = None, rebuild: bool = False):
+        """Sync knowledge sources to vector store."""
+        sources = self._config.sources
+        if source_name:
+            if source_name not in sources:
+                log.error(f"Source {source_name} not found in config")
+                return
+            sources_to_process = {source_name: sources[source_name]}
+        else:
+            sources_to_process = sources
 
-    def full_sync(self) -> dict:
-        """Full sync: detect additions, modifications, deletions."""
-        changed = 0
-        deleted = 0
-        errors = 0
-
-        current_files = self._collect_files()
-
-        # Detect deletions
-        cached_paths = set(self.hash_cache.keys())
-        for removed in cached_paths - current_files:
-            self.store.delete_by_source(removed)
-            del self.hash_cache[removed]
-            deleted += 1
-
-        # Detect additions/modifications
-        for filepath in current_files:
-            parsed = parse_file(filepath)
-            if parsed is None:
+        for name, root_path in sources_to_process.items():
+            log.info(f"Syncing source: {name} ({root_path})")
+            root = Path(root_path)
+            if not root.exists():
+                log.warning(f"Source path {root_path} does not exist, skipping")
                 continue
 
-            old_hash = self.hash_cache.get(filepath)
-            new_hash = parsed.hash
+            # Identify valid files
+            exts = SUPPORT_EXTS_WITH_CONFIG()
+            files = []
+            for ext in exts:
+                files.extend(root.rglob(f"*{ext}"))
 
-            if old_hash == new_hash:
-                continue  # Unchanged
-
-            if old_hash is not None:
-                self.store.delete_by_source(filepath)
-
-            try:
-                chunks = chunk_document(parsed.to_dict())
-                self.store.add_chunks([c.to_dict() for c in chunks])
+            for filepath in files:
+                if self._should_exclude(filepath):
+                    continue
                 
-                # Image description for PDFs (if enabled)
-                if self._config.image_description.enabled and parsed.format == "pdf":
-                    self._describe_pdf_images(parsed, filepath)
+                path_str = str(filepath)
                 
-                self.hash_cache[filepath] = new_hash
-                changed += 1
-            except Exception as e:
-                log.error(f"Failed to index {filepath}: {e}")
-                errors += 1
+                # Parsing
+                parsed = parse_file(path_str)
+                if parsed is None:
+                    continue
 
-        self._save_manifest()
-        total = len(current_files)
-        chunks = self.store.count()
-        return {"changed": changed, "deleted": deleted, "errors": errors,
-                "total_files": total, "total_chunks": chunks}
+                # Check hash
+                old_hash = self.hash_cache.get(path_str)
+                if not rebuild and old_hash == parsed.hash:
+                    continue
 
-    def rebuild_source(self, source_name: str) -> dict:
-        """Rebuild index for a specific knowledge source."""
-        # Find source config
-        source_cfg = None
-        for s in self._config.knowledge_sources:
-            if s.name == source_name:
-                source_cfg = s
-                break
-        if source_cfg is None:
-            return {"error": f"Source '{source_name}' not found"}
+                log.info(f"Indexing: {path_str} (rebuild={rebuild})")
+                
+                # Delete existing if updating
+                if old_hash or rebuild:
+                    self.store.delete_by_source(path_str)
 
-        # Delete existing chunks for this source
-        self.store.delete_by_source_name(source_name)
+                try:
+                    # Chunks - use object's to_dict() for chunker
+                    chunks = chunk_document(parsed.to_dict())
+                    self.store.add_chunks([c.to_dict() for c in chunks])
+                    
+                    # Update cache
+                    with self._lock:
+                        self.hash_cache[path_str] = parsed.hash
+                        self._save_manifest()
+                    
+                    log.info(f"Indexed {len(chunks)} chunks from {path_str}")
 
-        # Re-index
-        changed = 0
-        errors = 0
-        sp = Path(source_cfg.path)
-        if not sp.exists():
-            return {"error": f"Source path does not exist: {source_cfg.path}"}
+                    # Run image description if PDF
+                    if path_str.lower().endswith(".pdf"):
+                        self._describe_pdf_images(parsed, path_str)
 
-        glob_fn = sp.rglob if source_cfg.recursive else sp.glob
-        for p in glob_fn("*"):
-            if p.is_file() and not self._should_exclude(p):
-                if p.suffix.lower() in set(source_cfg.file_types):
-                    filepath = str(p.absolute())
-                    parsed = parse_file(filepath)
-                    if parsed is None:
-                        continue
-                    try:
-                        chunks = chunk_document(parsed.to_dict())
-                        self.store.add_chunks([c.to_dict() for c in chunks])
-                        self.hash_cache[filepath] = parsed.hash
-                        changed += 1
-                    except Exception as e:
-                        print(f"Failed to index {filepath}: {e}")
-                        errors += 1
+                except Exception as e:
+                    log.error(f"Failed to index {path_str}: {e}")
 
-        self._save_manifest()
-        return {"source": source_name, "changed": changed, "errors": errors}
-
-    def full_rebuild(self) -> dict:
-        """Delete all indexes and rebuild from scratch."""
-        self.hash_cache = {}
-        self._save_manifest()
-
-        # Reset ChromaDB collection
-        self.store.client.delete_collection("knowledge_base")
-        self.store.collection = self.store.client.get_or_create_collection(
-            name="knowledge_base",
-            metadata={"hnsw:space": "cosine", "hnsw:M": 32, "hnsw:construction_ef": 200}
-        )
-
-        return self.full_sync()
-
-    def start_watcher(self) -> Optional[Observer]:
-        """Start file watcher for incremental updates."""
-        if not self._config.watchdog.enabled:
-            log.info("Watchdog disabled in config")
-            return None
-
-        handler = _WatchHandler(self)
-        observer = Observer()
-
-        for source in self._config.knowledge_sources:
-            if not source.enabled:
-                continue
-            sp = Path(source.path)
-            if sp.exists():
-                observer.schedule(handler, str(sp), recursive=source.recursive)
-
-        observer.daemon = True
-        observer.start()
-        log.info("File watcher started")
-        return observer
-
-    def _describe_pdf_images(self, parsed_doc:dict, filepath: str):
+    def _describe_pdf_images(self, parsed_doc, filepath: str):
         """Generate image descriptions for a PDF and add as chunks."""
         try:
             from image_describer import describe_pdf_images
@@ -230,30 +133,39 @@ class IncrementalIndexer:
         log.info(f"Generating image descriptions for {filepath}")
         
         try:
-            # All vision config params (including output_path) are now loaded internally
             descriptions = describe_pdf_images(pdf_path=filepath)
         except Exception as e:
             log.warning(f"Image description failed for {filepath}: {e}")
             return
 
-        # Add each description as a separate chunk
+        # Use object properties for safety
+        doc_hash = getattr(parsed_doc, 'hash', '')
+        source = getattr(parsed_doc, 'source', filepath)
+        doc_format = getattr(parsed_doc, 'format', 'pdf')
+        total_chunks = getattr(parsed_doc, 'total_chunks', 0)
+        modified_at = getattr(parsed_doc, 'modified_at', 0)
+        title = getattr(parsed_doc, 'title', '')
+        source_name = getattr(parsed_doc, 'source_name', '')
+        relative_path = getattr(parsed_doc, 'relative_path', '')
+        weight = getattr(parsed_doc, 'weight', 1.0)
+
         for desc in descriptions:
             if not desc.description.strip():
                 continue
             chunk = Chunk(
-                chunk_id=f"{parsed_doc['hash']}_img_{desc.page_num}",
-                source=parsed_doc['source'],
+                chunk_id=f"{doc_hash}_img_{desc.page_num}",
+                source=source,
                 text=f"[Page {desc.page_num} 图像描述] {desc.description}",
                 meta={
-                    "hash": parsed_doc['hash'],
-                    "format": parsed_doc.get("format", ""),
+                    "hash": doc_hash,
+                    "format": doc_format,
                     "position": desc.page_num,
-                    "total_chunks": parsed_doc.get("total_chunks", 0),
-                    "modified_at": parsed_doc.get("modified_at", 0),
-                    "title": parsed_doc.get("title", ""),
-                    "source_name": parsed_doc.get("source_name", ""),
-                    "relative_path": parsed_doc.get("relative_path", ""),
-                    "weight": parsed_doc.get("weight", 1.0),
+                    "total_chunks": total_chunks,
+                    "modified_at": modified_at,
+                    "title": title,
+                    "source_name": source_name,
+                    "relative_path": relative_path,
+                    "weight": weight,
                     "content_hash": hashlib.sha256(desc.description.encode()).hexdigest()[:12],
                     "is_image_description": True,
                     "image_page": desc.page_num,
@@ -265,6 +177,25 @@ class IncrementalIndexer:
             except Exception as e:
                 log.warning(f"Failed to index image description for page {desc.page_num}: {e}")
 
+    def start_watchdog(self):
+        if self._observer:
+            return
+        
+        self._observer = Observer()
+        handler = _WatchHandler(self)
+        
+        for name, root_path in self._config.sources.items():
+            if Path(root_path).exists():
+                self._observer.schedule(handler, root_path, recursive=True)
+                log.info(f"Watching source: {name} ({root_path})")
+            
+        self._observer.start()
+
+    def stop_watchdog(self):
+        if self._observer:
+            self._observer.stop()
+            self._observer.join()
+            self._observer = None
 
 class _WatchHandler(FileSystemEventHandler):
     def __init__(self, indexer: IncrementalIndexer):
@@ -277,18 +208,14 @@ class _WatchHandler(FileSystemEventHandler):
         if event.is_directory:
             return
         p = Path(event.src_path)
-
-        # Check extension
         exts = SUPPORT_EXTS_WITH_CONFIG()
         if p.suffix.lower() not in exts:
             return
-
-        # Check exclusion
         if self.indexer._should_exclude(p):
             return
-
-        self._pending[event.src_path] = time.time()
-        threading.Timer(self._debounce, self._process).start()
+        with self.indexer._lock:
+            self._pending[event.src_path] = time.time()
+            threading.Timer(self._debounce, self._process).start()
 
     def _process(self):
         now = time.time()
@@ -300,27 +227,29 @@ class _WatchHandler(FileSystemEventHandler):
         for filepath in ready:
             p = Path(filepath)
             if not p.exists():
-                # File was deleted
                 self.indexer.store.delete_by_source(filepath)
-                self.indexer.hash_cache.pop(filepath, None)
-                self.indexer._save_manifest()
+                with self.indexer._lock:
+                    self.indexer.hash_cache.pop(filepath, None)
+                    self.indexer._save_manifest()
                 continue
 
             parsed = parse_file(filepath)
             if parsed is None:
                 continue
 
-            old_hash = self.indexer.hash_cache.get(filepath)
-            if old_hash == parsed.hash:
-                continue
+            with self.indexer._lock:
+                old_hash = self.indexer.hash_cache.get(filepath)
+                if old_hash == parsed.hash:
+                    continue
+                if old_hash:
+                    self.indexer.store.delete_by_source(filepath)
 
-            if old_hash:
-                self.indexer.store.delete_by_source(filepath)
-
-            try:
-                chunks = chunk_document(parsed.to_dict())
-                self.indexer.store.add_chunks([c.to_dict() for c in chunks])
-                self.indexer.hash_cache[filepath] = parsed.hash
-                self.indexer._save_manifest()
-            except Exception as e:
-                print(f"Watchdog indexing failed for {filepath}: {e}")
+                try:
+                    chunks = chunk_document(parsed.to_dict())
+                    self.indexer.store.add_chunks([c.to_dict() for c in chunks])
+                    self.indexer.hash_cache[filepath] = parsed.hash
+                    self.indexer._save_manifest()
+                    if filepath.lower().endswith(".pdf"):
+                        self.indexer._describe_pdf_images(parsed, filepath)
+                except Exception as e:
+                    log.error(f"Watchdog indexing failed for {filepath}: {e}")

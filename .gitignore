@@ -32,3 +32,4 @@ install_services.bat
 # OS
 .DS_Store
 Thumbs.db
+start-rag-api.ps1

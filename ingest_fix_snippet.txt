@@ -1,0 +1,60 @@
+    def _describe_pdf_images(self, parsed_doc, filepath: str):
+        """Generate image descriptions for a PDF and add as chunks."""
+        try:
+            from image_describer import describe_pdf_images
+        except ImportError:
+            log.warning("image_describer not available, skipping image descriptions")
+            return
+
+        cfg = self._config.image_description
+        if not cfg.enabled:
+            return
+
+        log.info(f"Generating image descriptions for {filepath}")
+        
+        try:
+            # All vision config params (including output_path) are now loaded internally
+            descriptions = describe_pdf_images(pdf_path=filepath)
+        except Exception as e:
+            log.warning(f"Image description failed for {filepath}: {e}")
+            return
+
+        # Use object properties instead of dictionary access
+        doc_hash = getattr(parsed_doc, 'hash', '')
+        source = getattr(parsed_doc, 'source', filepath)
+        doc_format = getattr(parsed_doc, 'format', 'pdf')
+        total_chunks = getattr(parsed_doc, 'total_chunks', 0)
+        modified_at = getattr(parsed_doc, 'modified_at', 0)
+        title = getattr(parsed_doc, 'title', '')
+        source_name = getattr(parsed_doc, 'source_name', '')
+        relative_path = getattr(parsed_doc, 'relative_path', '')
+        weight = getattr(parsed_doc, 'weight', 1.0)
+
+        # Add each description as a separate chunk
+        for desc in descriptions:
+            if not desc.description.strip():
+                continue
+            chunk = Chunk(
+                chunk_id=f"{doc_hash}_img_{desc.page_num}",
+                source=source,
+                text=f"[Page {desc.page_num} 图像描述] {desc.description}",
+                meta={
+                    "hash": doc_hash,
+                    "format": doc_format,
+                    "position": desc.page_num,
+                    "total_chunks": total_chunks,
+                    "modified_at": modified_at,
+                    "title": title,
+                    "source_name": source_name,
+                    "relative_path": relative_path,
+                    "weight": weight,
+                    "content_hash": hashlib.sha256(desc.description.encode()).hexdigest()[:12],
+                    "is_image_description": True,
+                    "image_page": desc.page_num,
+                },
+            )
+            try:
+                self.store.add_chunks([chunk.to_dict()])
+                log.info(f"Added image description for page {desc.page_num}")
+            except Exception as e:
+                log.warning(f"Failed to index image description for page {desc.page_num}: {e}")
