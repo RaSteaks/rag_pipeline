@@ -1,10 +1,11 @@
 """Incremental indexer with manifest + watchdog support."""
 import hashlib
 import json
+import queue
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -24,12 +25,26 @@ class IncrementalIndexer:
         self.store = store or RAGVectorStore(config_override=self._config)
         self._lock = threading.Lock()
         self._observer: Optional[Observer] = None
+        self.on_index_changed: Optional[Callable[[str], None]] = None
+        self._image_jobs: queue.Queue[tuple[dict, str]] = queue.Queue()
+        self._image_job_keys: set[tuple[str, str]] = set()
+        self._image_jobs_lock = threading.Lock()
+        self._image_worker: Optional[threading.Thread] = None
+        self._image_worker_stop = threading.Event()
 
         manifest_path = self._config.indexes.manifest_path or "index_manifest.json"
         self.manifest_path = Path(manifest_path)
         if self.manifest_path.parent != Path("."):
             self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
         self.hash_cache = self._load_manifest()
+
+    def _notify_index_changed(self, reason: str):
+        if not self.on_index_changed:
+            return
+        try:
+            self.on_index_changed(reason)
+        except Exception as e:
+            log.warning(f"Index change callback failed after {reason}: {e}")
 
     def _load_manifest(self) -> dict[str, str]:
         if not self.manifest_path.exists():
@@ -137,11 +152,12 @@ class IncrementalIndexer:
             return False, 0
         self.store.add_chunks([c.to_dict() for c in chunks])
 
-        if path_key.lower().endswith(".pdf"):
-            self._describe_pdf_images(parsed, path_key)
-
         with self._lock:
             self.hash_cache[path_key] = parsed.hash
+
+        if path_key.lower().endswith(".pdf"):
+            self._enqueue_pdf_image_description(parsed.to_dict(), path_key)
+
         return True, len(chunks)
 
     def sync(self, source_name: Optional[str] = None, rebuild: bool = False) -> dict:
@@ -240,10 +256,72 @@ class IncrementalIndexer:
             self._observer.stop()
             self._observer.join()
             self._observer = None
+        self.stop_background_workers()
 
     @property
     def watcher_running(self) -> bool:
         return bool(self._observer and self._observer.is_alive())
+
+    @property
+    def image_jobs_pending(self) -> int:
+        return self._image_jobs.qsize()
+
+    def stop_background_workers(self):
+        self._image_worker_stop.set()
+        if self._image_worker and self._image_worker.is_alive():
+            self._image_worker.join(timeout=2)
+
+    def _source_weight(self, source_name: str) -> float:
+        try:
+            for source in self._config.knowledge_sources:
+                if source.name == source_name:
+                    return source.weight
+        except Exception:
+            pass
+        return 1.0
+
+    def _start_image_worker(self):
+        if self._image_worker and self._image_worker.is_alive():
+            return
+        self._image_worker_stop.clear()
+        self._image_worker = threading.Thread(
+            target=self._image_worker_loop,
+            name="pdf-image-indexer",
+            daemon=True,
+        )
+        self._image_worker.start()
+
+    def _enqueue_pdf_image_description(self, parsed_doc: dict, filepath: str):
+        """Queue PDF image description so text indexing stays responsive."""
+        cfg = self._config.image_description
+        if not cfg.enabled:
+            return
+
+        doc_hash = parsed_doc.get("hash", "")
+        job_key = (filepath, doc_hash)
+        with self._image_jobs_lock:
+            if job_key in self._image_job_keys:
+                return
+            self._image_job_keys.add(job_key)
+
+        self._start_image_worker()
+        self._image_jobs.put((parsed_doc, filepath))
+        log.info(f"Queued PDF image description job for {filepath}")
+
+    def _image_worker_loop(self):
+        while not self._image_worker_stop.is_set():
+            try:
+                parsed_doc, filepath = self._image_jobs.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            doc_hash = parsed_doc.get("hash", "")
+            try:
+                self._describe_pdf_images(parsed_doc, filepath)
+            finally:
+                with self._image_jobs_lock:
+                    self._image_job_keys.discard((filepath, doc_hash))
+                self._image_jobs.task_done()
 
     def _describe_pdf_images(self, parsed_doc, filepath: str):
         """Generate image descriptions for a PDF and add as chunks."""
@@ -264,15 +342,32 @@ class IncrementalIndexer:
             log.warning(f"Image description failed for {filepath}: {e}")
             return
 
-        doc_hash = getattr(parsed_doc, "hash", "")
-        source = getattr(parsed_doc, "source", filepath)
-        doc_format = getattr(parsed_doc, "format", "pdf")
-        modified_at = getattr(parsed_doc, "modified_at", 0)
-        title = getattr(parsed_doc, "title", "")
-        source_name = getattr(parsed_doc, "source_name", "")
-        relative_path = getattr(parsed_doc, "relative_path", "")
-        weight = getattr(parsed_doc, "weight", 1.0)
+        if isinstance(parsed_doc, dict):
+            doc_hash = parsed_doc.get("hash", "")
+            source = parsed_doc.get("source", filepath)
+            doc_format = parsed_doc.get("format", "pdf")
+            modified_at = parsed_doc.get("modified_at", 0)
+            title = parsed_doc.get("title", "")
+            source_name = parsed_doc.get("source_name", "")
+            relative_path = parsed_doc.get("relative_path", "")
+        else:
+            doc_hash = getattr(parsed_doc, "hash", "")
+            source = getattr(parsed_doc, "source", filepath)
+            doc_format = getattr(parsed_doc, "format", "pdf")
+            modified_at = getattr(parsed_doc, "modified_at", 0)
+            title = getattr(parsed_doc, "title", "")
+            source_name = getattr(parsed_doc, "source_name", "")
+            relative_path = getattr(parsed_doc, "relative_path", "")
 
+        with self._lock:
+            current_hash = self.hash_cache.get(filepath)
+        if current_hash != doc_hash:
+            log.info(f"Skipping stale image descriptions for {filepath}")
+            return
+
+        weight = self._source_weight(source_name)
+
+        chunks = []
         for desc in descriptions:
             if not desc.description.strip():
                 continue
@@ -292,12 +387,33 @@ class IncrementalIndexer:
                     "content_hash": hashlib.sha256(desc.description.encode()).hexdigest()[:12],
                     "is_image_description": True,
                     "image_page": desc.page_num,
+                    "index_state": "pending",
                 },
             )
-            try:
-                self.store.add_chunks([chunk.to_dict()])
-            except Exception as e:
-                log.warning(f"Failed to index image description for page {desc.page_num}: {e}")
+            chunks.append(chunk.to_dict())
+
+        if not chunks:
+            return
+
+        with self._lock:
+            current_hash = self.hash_cache.get(filepath)
+        if current_hash != doc_hash:
+            log.info(f"Skipping stale image descriptions for {filepath}")
+            return
+
+        try:
+            self.store.add_chunks(chunks)
+            ready_ids = [c["chunk_id"] for c in chunks]
+            ready_metas = []
+            for c in chunks:
+                meta = dict(c["meta"])
+                meta["index_state"] = "ready"
+                ready_metas.append(meta)
+            self.store.update_metadatas(ready_ids, ready_metas)
+            log.info(f"Indexed {len(chunks)} image description chunks for {filepath}")
+            self._notify_index_changed("pdf_image_descriptions")
+        except Exception as e:
+            log.warning(f"Failed to index image descriptions for {filepath}: {e}")
 
 
 class _WatchHandler(FileSystemEventHandler):
@@ -343,10 +459,12 @@ class _WatchHandler(FileSystemEventHandler):
                 with self.indexer._lock:
                     self.indexer.hash_cache.pop(filepath, None)
                     self.indexer._save_manifest()
+                self.indexer._notify_index_changed("watchdog_delete")
                 continue
             try:
                 changed, _ = self.indexer._index_file(p, rebuild=False)
                 if changed:
                     self.indexer._save_manifest()
+                    self.indexer._notify_index_changed("watchdog_update")
             except Exception as e:
                 log.error(f"Watchdog indexing failed for {filepath}: {e}")

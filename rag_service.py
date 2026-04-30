@@ -109,6 +109,8 @@ def _runtime_status() -> dict:
         if not cfg.reranker.enabled
         else _probe_model_service(cfg.reranker.endpoint)
     )
+    if retriever is not None:
+        rerank_status["circuit"] = retriever.reranker.circuit_state
 
     total_chunks = 0
     if store is not None:
@@ -144,6 +146,10 @@ def _runtime_status() -> dict:
             "running": bool(indexer and indexer.watcher_running),
             "debounce_seconds": cfg.watchdog.debounce_seconds,
         },
+        "image_indexing": {
+            "enabled": cfg.image_description.enabled,
+            "pending_jobs": indexer.image_jobs_pending if indexer else 0,
+        },
         "config": {
             "source_count": len(cfg.knowledge_sources),
             "enabled_source_count": len([s for s in cfg.knowledge_sources if s.enabled]),
@@ -167,6 +173,13 @@ def _sync_mode_name(source_name: Optional[str], rebuild: bool) -> str:
     if source_name:
         return f"sync_source:{source_name}"
     return "full_sync"
+
+
+def _rebuild_bm25_after_index_change(reason: str):
+    if retriever is None:
+        return
+    log.info(f"Rebuilding BM25 after index change: {reason}")
+    retriever.rebuild_bm25()
 
 
 def _run_sync(source_name: Optional[str] = None, rebuild: bool = False) -> dict:
@@ -226,6 +239,7 @@ async def startup():
     store = RAGVectorStore()
     indexer = IncrementalIndexer(store)
     retriever = HybridRetriever(store)
+    indexer.on_index_changed = _rebuild_bm25_after_index_change
     indexer.start_watcher()
 
     def _initial_sync_job():
@@ -292,6 +306,7 @@ def _apply_runtime_reload() -> dict:
     store = RAGVectorStore(config_override=cfg)
     indexer = IncrementalIndexer(store, config_override=cfg)
     retriever = HybridRetriever(store, config_override=cfg)
+    indexer.on_index_changed = _rebuild_bm25_after_index_change
     indexer.start_watcher()
     return {"status": "reloaded", "sources": len(cfg.knowledge_sources)}
 

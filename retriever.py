@@ -12,6 +12,8 @@ BM25 index is persisted to disk and loaded on startup if available,
 avoiding full rebuild on every restart.
 """
 import json
+import hashlib
+import threading
 import jieba
 import rank_bm25
 from pathlib import Path
@@ -33,6 +35,8 @@ class HybridRetriever:
         self.bm25: Optional[rank_bm25.BM25Okapi] = None
         self.bm25_docs: list[str] = []
         self.bm25_ids: list[str] = []
+        self._bm25_signature = ""
+        self._bm25_lock = threading.RLock()
         self._init_bm25()
 
     @property
@@ -53,9 +57,34 @@ class HybridRetriever:
             "idf": {str(k): float(v) for k, v in self.bm25.idf.items()} if hasattr(self.bm25, 'idf') else {},
             "docs": self.bm25_docs,
             "ids": self.bm25_ids,
+            "store_signature": self._bm25_signature,
         }
         cache_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         log.info(f"BM25 index saved to {cache_path}")
+
+    def _store_signature(self, markers: Optional[dict] = None) -> str:
+        """Fingerprint Chroma contents by IDs and chunk content markers."""
+        markers = markers or self.store.get_all_document_markers()
+        ids = markers.get("ids") or []
+        metadatas = markers.get("metadatas") or []
+
+        hasher = hashlib.sha256()
+        rows = []
+        for idx, chunk_id in enumerate(ids):
+            meta = metadatas[idx] if idx < len(metadatas) and metadatas[idx] else {}
+            rows.append((
+                str(chunk_id),
+                str(meta.get("content_hash", "")),
+                str(meta.get("hash", "")),
+                str(meta.get("source", "")),
+                str(meta.get("position", "")),
+                str(meta.get("is_image_description", "")),
+            ))
+
+        for row in sorted(rows, key=lambda item: item[0]):
+            hasher.update("\x1f".join(row).encode("utf-8", errors="replace"))
+            hasher.update(b"\n")
+        return hasher.hexdigest()
 
     def _load_bm25(self) -> bool:
         """Load BM25 index from disk. Returns True if loaded successfully."""
@@ -65,17 +94,21 @@ class HybridRetriever:
 
         try:
             data = json.loads(cache_path.read_text(encoding="utf-8"))
-            # Verify data consistency with ChromaDB
-            if len(data.get("docs", [])) != self.store.count():
-                log.info("BM25 cache stale (chunk count mismatch), rebuilding...")
+            markers = self.store.get_all_document_markers()
+            signature = self._store_signature(markers)
+            cached_signature = data.get("store_signature", "")
+            if cached_signature != signature:
+                log.info("BM25 cache stale (store fingerprint mismatch), rebuilding...")
                 return False
 
-            self.bm25_docs = data["docs"]
-            self.bm25_ids = data["ids"]
+            with self._bm25_lock:
+                self.bm25_docs = data["docs"]
+                self.bm25_ids = data["ids"]
+                self._bm25_signature = signature
 
-            # Rebuild BM25 from tokenized corpus
-            tokenized = [list(jieba.cut(doc)) for doc in self.bm25_docs]
-            self.bm25 = rank_bm25.BM25Okapi(tokenized)
+                # Rebuild BM25 from tokenized corpus
+                tokenized = [list(jieba.cut(doc)) for doc in self.bm25_docs]
+                self.bm25 = rank_bm25.BM25Okapi(tokenized)
             log.info(f"BM25 index loaded from cache ({len(self.bm25_docs)} docs)")
             return True
         except Exception as e:
@@ -90,14 +123,23 @@ class HybridRetriever:
         # Cache miss or stale, rebuild from ChromaDB
         all_docs = self.store.get_all_documents()
         if all_docs["documents"]:
-            self.bm25_docs = all_docs["documents"]
-            self.bm25_ids = all_docs["ids"]
-            tokenized = [list(jieba.cut(doc)) for doc in self.bm25_docs]
-            self.bm25 = rank_bm25.BM25Okapi(tokenized)
+            with self._bm25_lock:
+                self.bm25_docs = all_docs["documents"]
+                self.bm25_ids = all_docs["ids"]
+                self._bm25_signature = self._store_signature({
+                    "ids": all_docs["ids"],
+                    "metadatas": all_docs.get("metadatas", []),
+                })
+                tokenized = [list(jieba.cut(doc)) for doc in self.bm25_docs]
+                self.bm25 = rank_bm25.BM25Okapi(tokenized)
             log.info(f"BM25 index built with {len(self.bm25_docs)} documents")
             self._save_bm25()
         else:
-            self.bm25 = None
+            with self._bm25_lock:
+                self.bm25 = None
+                self.bm25_docs = []
+                self.bm25_ids = []
+                self._bm25_signature = self._store_signature({"ids": [], "metadatas": []})
             log.info("No documents for BM25 index yet")
 
     def rebuild_bm25(self):
@@ -144,27 +186,29 @@ class HybridRetriever:
 
     def _bm25_search(self, query: str, top_k: int) -> list[dict]:
         """BM25 keyword search."""
-        if self.bm25 is None:
+        with self._bm25_lock:
+            bm25 = self.bm25
+            docs = list(self.bm25_docs)
+            ids = list(self.bm25_ids)
+
+        if bm25 is None:
             return []
 
         tokenized_query = list(jieba.cut(query))
-        scores = self.bm25.get_scores(tokenized_query)
+        scores = bm25.get_scores(tokenized_query)
         top_indices = scores.argsort()[-top_k:][::-1]
 
         results = []
         for i in top_indices:
             if scores[i] > 0:
                 try:
-                    meta = self.store.collection.get(
-                        ids=[self.bm25_ids[i]],
-                        include=["metadatas"]
-                    )
-                    doc_meta = meta["metadatas"][0] if meta["metadatas"] else {}
+                    metadatas = self.store.get_metadatas([ids[i]])
+                    doc_meta = metadatas[0] if metadatas else {}
                 except Exception:
                     doc_meta = {}
 
                 results.append({
-                    "text": self.bm25_docs[i],
+                    "text": docs[i],
                     "meta": doc_meta,
                     "score": float(scores[i]),
                     "source": "bm25",

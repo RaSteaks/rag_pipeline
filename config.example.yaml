@@ -18,6 +18,9 @@ reranker:
   timeout_seconds: 20
   max_candidates: 20
   fallback_to_rrf: true
+  skip_if_unavailable:
+  circuit_breaker_failures: 3
+  circuit_breaker_cooldown_seconds: 60
 
 indexes:
   chroma_path: "C:\\Openclaw\\chromadb"

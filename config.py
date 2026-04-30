@@ -24,6 +24,9 @@ class RerankerConfig(BaseModel):
     timeout_seconds: int = 20
     max_candidates: int = 20
     fallback_to_rrf: bool = True
+    skip_if_unavailable: Optional[bool] = None
+    circuit_breaker_failures: int = 3
+    circuit_breaker_cooldown_seconds: int = 60
 
 
 class IndexesConfig(BaseModel):

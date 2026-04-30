@@ -5,6 +5,7 @@ each chunk is retried individually. Chunks that still fail are skipped
 with a warning, rather than crashing the entire sync process.
 """
 import chromadb
+import threading
 from openai import OpenAI
 from pathlib import Path
 from typing import Optional
@@ -31,6 +32,7 @@ class RAGVectorStore:
         )
         self._embed_client = None
         self._batch_size = self._config.embedding.batch_size
+        self._collection_lock = threading.RLock()
 
     @property
     def embed_client(self):
@@ -42,6 +44,28 @@ class RAGVectorStore:
                 timeout=cfg.timeout_seconds,
             )
         return self._embed_client
+
+    @staticmethod
+    def _visible(meta: Optional[dict]) -> bool:
+        return not meta or meta.get("index_state") != "pending"
+
+    @staticmethod
+    def _filter_visible(result: dict) -> dict:
+        ids = result.get("ids") or []
+        docs = result.get("documents") or []
+        metas = result.get("metadatas") or []
+
+        filtered = {"ids": [], "documents": [], "metadatas": []}
+        for idx, chunk_id in enumerate(ids):
+            meta = metas[idx] if idx < len(metas) else {}
+            if not RAGVectorStore._visible(meta):
+                continue
+            filtered["ids"].append(chunk_id)
+            if docs:
+                filtered["documents"].append(docs[idx] if idx < len(docs) else "")
+            if metas:
+                filtered["metadatas"].append(meta)
+        return filtered
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings using local Qwen3-Embedding-8B."""
@@ -68,56 +92,69 @@ class RAGVectorStore:
             texts = [c["text"] for c in batch]
             try:
                 embeddings = self.embed_texts(texts)
-                self.collection.upsert(
-                    ids=[c["chunk_id"] for c in batch],
-                    embeddings=embeddings,
-                    documents=texts,
-                    metadatas=[c["meta"] for c in batch],
-                )
+                with self._collection_lock:
+                    self.collection.upsert(
+                        ids=[c["chunk_id"] for c in batch],
+                        embeddings=embeddings,
+                        documents=texts,
+                        metadatas=[c["meta"] for c in batch],
+                    )
             except Exception as e:
                 print(f"Failed to embed batch {i//batch_size}: {e}")
                 # Try individual chunks
                 for j, chunk in enumerate(batch):
                     try:
                         single_emb = self.embed_texts([chunk["text"]])
-                        self.collection.upsert(
-                            ids=[chunk["chunk_id"]],
-                            embeddings=single_emb,
-                            documents=[chunk["text"]],
-                            metadatas=[chunk["meta"]],
-                        )
+                        with self._collection_lock:
+                            self.collection.upsert(
+                                ids=[chunk["chunk_id"]],
+                                embeddings=single_emb,
+                                documents=[chunk["text"]],
+                                metadatas=[chunk["meta"]],
+                            )
                     except Exception as e2:
                         print(f"Skipping chunk {chunk['chunk_id']}: {e2}")
 
     def delete_by_source(self, source: str):
         """Delete all chunks from a specific source file."""
         try:
-            self.collection.delete(where={"source": source})
+            with self._collection_lock:
+                self.collection.delete(where={"source": source})
         except Exception:
             pass
 
     def delete_by_source_name(self, source_name: str):
         """Delete all chunks from a knowledge source."""
         try:
-            self.collection.delete(where={"source_name": source_name})
+            with self._collection_lock:
+                self.collection.delete(where={"source_name": source_name})
         except Exception:
             pass
+
+    def update_metadatas(self, ids: list[str], metadatas: list[dict]):
+        """Update metadata for existing chunks through the collection lock."""
+        if not ids:
+            return
+        with self._collection_lock:
+            self.collection.update(ids=ids, metadatas=metadatas)
 
     def search(self, query: str, top_k: int = None) -> list[dict]:
         """Vector similarity search."""
         cfg = self._config.retrieval
         top_k = top_k or cfg.vector_top_k
-        count = self.collection.count()
+        with self._collection_lock:
+            count = self.collection.count()
         if count == 0:
             return []
         top_k = min(top_k, count)
 
         query_embedding = self.embed_texts([query])[0]
-        results = self.collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k,
-            include=["documents", "metadatas", "distances"],
-        )
+        with self._collection_lock:
+            results = self.collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k,
+                include=["documents", "metadatas", "distances"],
+            )
         if not results["documents"][0]:
             return []
         return [
@@ -131,14 +168,35 @@ class RAGVectorStore:
                 results["metadatas"][0],
                 results["distances"][0],
             )
+            if self._visible(meta)
         ]
 
     def get_all_documents(self) -> dict:
         """Get all documents for BM25 index building."""
-        count = self.collection.count()
-        if count == 0:
-            return {"ids": [], "documents": [], "metadatas": []}
-        return self.collection.get(include=["documents", "metadatas"])
+        with self._collection_lock:
+            count = self.collection.count()
+            if count == 0:
+                return {"ids": [], "documents": [], "metadatas": []}
+            return self._filter_visible(self.collection.get(include=["documents", "metadatas"]))
+
+    def get_all_document_markers(self) -> dict:
+        """Get stable IDs and metadata for cache consistency checks."""
+        with self._collection_lock:
+            count = self.collection.count()
+            if count == 0:
+                return {"ids": [], "metadatas": []}
+            markers = self._filter_visible(self.collection.get(include=["metadatas"]))
+            markers.pop("documents", None)
+            return markers
+
+    def get_metadatas(self, ids: list[str]) -> list[dict]:
+        """Fetch metadata for specific IDs through the collection lock."""
+        if not ids:
+            return []
+        with self._collection_lock:
+            result = self.collection.get(ids=ids, include=["metadatas"])
+        return result.get("metadatas") or []
 
     def count(self) -> int:
-        return self.collection.count()
+        with self._collection_lock:
+            return self.collection.count()
