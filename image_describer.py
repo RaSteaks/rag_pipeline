@@ -4,6 +4,7 @@ All configurations are loaded from config.yaml via config.py.
 No hardcoded paths or API keys should exist here.
 """
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -66,7 +67,7 @@ def describe_image_llamacpp(image_path: str, cfg) -> str:
             "max_tokens": 512,
             "temperature": 0.3,
         }
-        resp = requests.post(f"{cfg.endpoint}/v1/chat/completions", json=payload, timeout=60)
+        resp = requests.post(f"{cfg.endpoint}/v1/chat/completions", json=payload, timeout=180)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
@@ -119,12 +120,31 @@ def describe_image_api(image_path: str, cfg) -> str:
             "temperature": 0.3,
         }
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}"}
-        resp = requests.post(f"{cfg.api_base_url}/chat/completions", json=payload, headers=headers, timeout=30)
+        resp = requests.post(f"{cfg.api_base_url}/chat/completions", json=payload, headers=headers, timeout=180)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
         log.warning(f"Vision API failed: {e}")
         return ""
+
+
+def _describe_single_page(img_path: str, page_num: int, cfg, pdf_path: str) -> ImageDescription | None:
+    """Describe one rendered PDF page."""
+    if cfg.backend == "api":
+        desc = describe_image_api(img_path, cfg)
+    elif cfg.backend == "local":
+        desc = describe_image_local(img_path, cfg)
+    else:
+        desc = describe_image_llamacpp(img_path, cfg)
+
+    if not desc:
+        return None
+    return ImageDescription(
+        page_num=page_num,
+        description=desc,
+        image_path=img_path,
+        source=pdf_path,
+    )
 
 
 def describe_pdf_images(pdf_path: str) -> list[ImageDescription]:
@@ -149,28 +169,33 @@ def describe_pdf_images(pdf_path: str) -> list[ImageDescription]:
     log.info(f"Rendered {len(image_paths)} pages from {pdf_name}")
 
     descriptions = []
-    for i, img_path in enumerate(image_paths):
-        page_num = i + 1
-        log.info(f"Describing page {page_num}/{len(image_paths)} of {pdf_name} [backend: {cfg.backend}]")
+    max_workers = max(1, int(getattr(cfg, "max_workers", 4) or 4))
+    max_workers = min(max_workers, len(image_paths))
+    log.info(
+        f"Describing {len(image_paths)} pages from {pdf_name} "
+        f"with {max_workers} workers [backend: {cfg.backend}]"
+    )
 
-        desc = ""
-        if cfg.backend == "api":
-            desc = describe_image_api(img_path, cfg)
-        elif cfg.backend == "local":
-            desc = describe_image_local(img_path, cfg)
-        else:  # server
-            desc = describe_image_llamacpp(img_path, cfg)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_describe_single_page, img_path, i + 1, cfg, pdf_path): i + 1
+            for i, img_path in enumerate(image_paths)
+        }
 
-        if desc:
-            descriptions.append(ImageDescription(
-                page_num=page_num,
-                description=desc,
-                image_path=img_path,
-                source=pdf_path,
-            ))
-            log.debug(f"Page {page_num}: {desc[:100]}...")
-        else:
-            log.warning(f"Page {page_num}: description empty, skipping")
+        for future in as_completed(futures):
+            page_num = futures[future]
+            try:
+                item = future.result()
+            except Exception as e:
+                log.warning(f"Page {page_num}: image description failed: {e}")
+                continue
 
+            if item:
+                descriptions.append(item)
+                log.debug(f"Page {page_num}: {item.description[:100]}...")
+            else:
+                log.warning(f"Page {page_num}: description empty, skipping")
+
+    descriptions.sort(key=lambda item: item.page_num)
     log.info(f"Generated {len(descriptions)} image descriptions for {pdf_name}")
     return descriptions

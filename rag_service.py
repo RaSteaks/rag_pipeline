@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 BASE_DIR = Path(__file__).parent
 sys.path.insert(0, str(BASE_DIR))
 
-from config import AppConfig, get_config, reload_config
+from config import AppConfig, get_config, reload_config, write_config_with_backup
 from ingest import IncrementalIndexer
 from logger import setup_logger
 from retriever import HybridRetriever
@@ -376,10 +376,15 @@ async def save_config_text(req: ConfigTextUpdateRequest):
     except Exception as e:
         return {"status": "error", "message": f"Invalid config: {e}"}
 
-    CONFIG_PATH.write_text(req.yaml_text, encoding="utf-8")
+    backup_path = write_config_with_backup(CONFIG_PATH, req.yaml_text)
     log.info(f"Config saved: {CONFIG_PATH}")
     reload_result = _apply_runtime_reload()
-    return {"status": "ok", "path": str(CONFIG_PATH), "reload": reload_result}
+    return {
+        "status": "ok",
+        "path": str(CONFIG_PATH),
+        "backup": str(backup_path) if backup_path else None,
+        "reload": reload_result,
+    }
 
 
 @app.post("/config/save-quick")
@@ -426,12 +431,13 @@ async def save_config_quick(req: ConfigQuickUpdateRequest):
         return {"status": "error", "message": f"Invalid config after update: {e}"}
 
     yaml_text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
-    CONFIG_PATH.write_text(yaml_text, encoding="utf-8")
+    backup_path = write_config_with_backup(CONFIG_PATH, yaml_text)
     log.info(f"Config quick-updated: {CONFIG_PATH}")
     reload_result = _apply_runtime_reload()
     return {
         "status": "ok",
         "path": str(CONFIG_PATH),
+        "backup": str(backup_path) if backup_path else None,
         "created": not exists and CONFIG_PATH.exists(),
         "updated_sources": updated_sources,
         "missing_sources": missing_sources,
