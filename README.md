@@ -26,7 +26,7 @@ Reranker 精排 (CPU, /v1/rerank)
     ↓ Reranker 不可用时降级为 RRF
 文档多样性过滤 (max_chunks_per_doc)
     ↓
-返回 Top-5/8
+默认返回 Top-5（可通过 `top_k` 覆盖）
 ```
 
 ### 增量更新
@@ -77,7 +77,7 @@ llama-server.exe -m /path/to/reranker-model.gguf `
 python rag_service.py
 ```
 
-首次启动会自动全量同步所有知识源文件。
+首次启动会自动执行一次 `full_sync`（在没有 manifest 缓存时，效果等同全量索引）。
 
 ### 使用 CLI
 
@@ -110,19 +110,53 @@ python cli.py stats
 | POST | `/reload-config` | 重载配置文件 |
 | GET | `/stats` | 索引统计信息 |
 | GET | `/health` | 健康检查 |
+| GET | `/status` | 运行时状态（Embedding/Reranker/BM25/Watcher） |
+| GET | `/logs` | 最近服务日志（支持 `limit`、`min_level`） |
+| GET | `/config/editor` | 获取配置原文与结构化内容（UI 编辑用） |
+| POST | `/config/save-quick` | 快速保存模型名与知识源路径并重载 |
+| POST | `/config/save-text` | 保存 `config.yaml` 原文并重载 |
+| GET | `/` | Web 控制台（状态查看 + 同步/重建/重载） |
+
+### Web 控制台
+
+启动 `python rag_service.py` 后，浏览器访问：
+
+```text
+http://127.0.0.1:8900/
+```
+
+页面支持：
+
+- 查看 API / Embedding / Reranker 在线状态
+- 查看 Chroma chunk 数、已索引文件数、BM25 状态、watchdog 状态
+- 执行增量同步、全量重建、按知识源重建
+- 重载配置并实时刷新状态
+- 查看实时服务日志并按级别过滤，便于纠错
+- 通过 UI 快速修改 `embedding.model`、`reranker.model`、知识源 `path`
+- 直接在页面编辑并保存 `config.yaml` 原文
+
+控制台前端文件结构：
+
+- `templates/dashboard.html`：页面结构模板
+- `static/dashboard.css`：样式
+- `static/dashboard.js`：交互逻辑
 
 ## 配置
 
 编辑 `config.yaml`（参考 `config.example.yaml`）。
+若 `config.yaml` 不存在，可在控制台的“配置编辑”区域保存一次配置原文，系统会自动创建该文件。
 
 | 配置项 | 说明 | 改后需重建？ |
 |--------|------|-------------|
 | `knowledge_sources` | 知识源目录、权重、文件类型 | ✅ 是 |
 | `chunking` | 分块大小、重叠、最小 chunk | ✅ 是 |
-| `exclude` | 排除的目录和文件模式 | ✅ 是 |
+| `exclude` | 排除规则（`dirs` / `files`） | ✅ 是 |
+| `indexes` | Chroma/BM25/manifest 路径 | ❌ 重启即可 |
 | `retrieval` | Top-K 值、RRF 参数 | ❌ 重启即可 |
 | `reranker` | 端点、超时、候选数 | ❌ 重启即可 |
 | `embedding` | 端点、模型名、批大小 | ❌ 重启即可 |
+| `watchdog` | 文件监听开关与防抖时间 | ❌ 重启即可 |
+| `image_description` | PDF 图片描述开关与后端参数 | ✅ 建议重建 |
 
 ### 知识源权重说明
 
@@ -135,7 +169,7 @@ python cli.py stats
 |------|------|
 | `config.yaml` | 生产配置 |
 | `config.example.yaml` | 配置模板 |
-| `config.py` | Pydantic 配置校验，所有默认值为空，强制从 YAML 读取 |
+| `config.py` | Pydantic 配置模型 + YAML 加载/热重载 |
 | `parsers.py` | 文档解析器，支持 MD/PDF/DOCX/HTML/IPynb/TXT/PY/JSON/YAML |
 | `chunker.py` | 语义分块器，按 markdown 标题递归切分，含截断保护 |
 | `vector_store.py` | ChromaDB 存储 + Embedding 向量化，分批容错（单条失败时跳过） |
@@ -143,10 +177,11 @@ python cli.py stats
 | `retriever.py` | 混合检索：向量+BM25→RRF 融合→Reranker 精排→多样性过滤 |
 | `image_describer.py` | PDF 页面渲染 + 视觉模型描述（InternVL2.5-4B），按需调用，非常驻 |
 | `ingest.py` | 增量索引（SHA256+manifest+watchdog）+ 全量重建 + 按源重建 + 图片描述 |
-| `rag_service.py` | FastAPI 主服务，启动时检测 Embedding/Reranker 可用性 |
+| `rag_service.py` | FastAPI 主服务 + `/status` 状态接口 + Dashboard 模板渲染 |
 | `cli.py` | CLI 工具（search/sync/stats），Windows UTF-8 兼容 |
-| `start.bat` | Windows 启动脚本（检查 Embedding → 启动 RAG API） |
-| `start-reranker.ps1` | Reranker 启动脚本（CPU, --rerank --pooling rank -ngl 0） |
+| `templates/dashboard.html` | 控制台页面模板（Jinja2） |
+| `static/dashboard.css` | 控制台样式文件 |
+| `static/dashboard.js` | 控制台交互逻辑 |
 
 ###  视觉索引机制 (Vision Indexing)
 
@@ -176,7 +211,7 @@ image_description:
 
 
 
-## 降经机制
+## 降级机制
 
 - **Embedding 不可用** → 向量检索失败，RAG API 启动时警告，搜索返回空结果
 - **Reranker 不可用/超时** → 自动降级为 RRF 融合结果，日志输出 WARN
@@ -195,6 +230,7 @@ image_description:
 | **分块策略** | Markdown 标题递归切分 | 按标题层级分割，超大段落按空行再分 |
 | **增量更新** | SHA256 + manifest + watchdog | 文件哈希比对，watchdog 实时监听，防抖 2-10s |
 | **API 框架** | FastAPI + uvicorn | REST API，异步处理 |
+| **页面模板** | Jinja2 + StaticFiles | Dashboard 模板渲染与静态资源托管 |
 | **配置管理** | Pydantic + YAML | 类型校验，热重载，不含硬编码 |
 | **CLI** | argparse | search / sync / stats 子命令 |
 | **Python** | 3.10+ | uv 管理虚拟环境和依赖 |

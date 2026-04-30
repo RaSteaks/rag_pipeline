@@ -1,122 +1,249 @@
-import os
-import time
+"""Incremental indexer with manifest + watchdog support."""
 import hashlib
-import threading
 import json
+import threading
+import time
 from pathlib import Path
-from typing import Optional, Dict, Any
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from typing import Optional
 
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+from chunker import Chunk, chunk_document
+from config import AppConfig, KnowledgeSource, get_config
 from logger import setup_logger
-from config import get_config
-from parsers import parse_file, SUPPORT_EXTS_WITH_CONFIG
-from chunker import chunk_document, Chunk
-from vector_store import VectorStore
+from parsers import SUPPORT_EXTS_WITH_CONFIG, parse_file
+from vector_store import RAGVectorStore
 
 log = setup_logger("rag")
 
+
 class IncrementalIndexer:
-    def __init__(self):
-        self._config = get_config()
-        self.store = VectorStore(self._config)
-        self.manifest_path = Path("index_manifest.json")
-        self.hash_cache = self._load_manifest()
+    def __init__(self, store: Optional[RAGVectorStore] = None, config_override: Optional[AppConfig] = None):
+        self._config = config_override or get_config()
+        self.store = store or RAGVectorStore(config_override=self._config)
         self._lock = threading.Lock()
         self._observer: Optional[Observer] = None
 
-    def _load_manifest(self) -> Dict[str, str]:
-        if self.manifest_path.exists():
-            try:
-                with open(self.manifest_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception as e:
-                log.error(f"Failed to load manifest: {e}")
-        return {}
+        manifest_path = self._config.indexes.manifest_path or "index_manifest.json"
+        self.manifest_path = Path(manifest_path)
+        if self.manifest_path.parent != Path("."):
+            self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        self.hash_cache = self._load_manifest()
+
+    def _load_manifest(self) -> dict[str, str]:
+        if not self.manifest_path.exists():
+            return {}
+        try:
+            return json.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            log.warning(f"Failed to load manifest: {e}")
+            return {}
 
     def _save_manifest(self):
         try:
-            with open(self.manifest_path, "w", encoding="utf-8") as f:
-                json.dump(self.hash_cache, f, ensure_ascii=False, indent=2)
+            self.manifest_path.write_text(
+                json.dumps(self.hash_cache, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         except Exception as e:
             log.error(f"Failed to save manifest: {e}")
 
+    def _source_by_name(self, source_name: str) -> Optional[KnowledgeSource]:
+        for source in self._config.knowledge_sources:
+            if source.name == source_name:
+                return source
+        return None
+
+    def _iter_sources(self, source_name: Optional[str] = None) -> list[KnowledgeSource]:
+        if source_name:
+            source = self._source_by_name(source_name)
+            if source is None:
+                raise ValueError(f"Source not found: {source_name}")
+            return [source]
+        return [s for s in self._config.knowledge_sources if s.enabled]
+
     def _should_exclude(self, path: Path) -> bool:
-        path_str = str(path).replace('\\', '/')
-        # Check directories
-        for exc_dir in self._config.exclude.directories:
-            if f"/{exc_dir}/" in f"/{path_str}/":
+        normalized = str(path).replace("\\", "/")
+        for exc_dir in self._config.exclude.dirs:
+            key = exc_dir.strip("/\\")
+            if key and f"/{key}/" in f"/{normalized}/":
                 return True
-        # Check patterns
-        for pattern in self._config.exclude.patterns:
+        for pattern in self._config.exclude.files:
             if path.match(pattern):
                 return True
         return False
 
-    def sync(self, source_name: Optional[str] = None, rebuild: bool = False):
-        """Sync knowledge sources to vector store."""
-        sources = self._config.sources
-        if source_name:
-            if source_name not in sources:
-                log.error(f"Source {source_name} not found in config")
-                return
-            sources_to_process = {source_name: sources[source_name]}
-        else:
-            sources_to_process = sources
+    def _collect_source_files(self, source: KnowledgeSource) -> list[Path]:
+        root = Path(source.path)
+        if not root.exists():
+            log.warning(f"Source path does not exist, skipped: {source.path}")
+            return []
 
-        for name, root_path in sources_to_process.items():
-            log.info(f"Syncing source: {name} ({root_path})")
-            root = Path(root_path)
-            if not root.exists():
-                log.warning(f"Source path {root_path} does not exist, skipping")
+        all_supported = SUPPORT_EXTS_WITH_CONFIG()
+        allowed_exts = {e.lower() for e in source.file_types} & all_supported
+        if not allowed_exts:
+            allowed_exts = all_supported
+
+        files: list[Path] = []
+        for ext in allowed_exts:
+            iterator = root.rglob(f"*{ext}") if source.recursive else root.glob(f"*{ext}")
+            for p in iterator:
+                if p.is_file() and not self._should_exclude(p):
+                    files.append(p.resolve())
+
+        # Deduplicate
+        return list(dict.fromkeys(files))
+
+    def _remove_deleted_files(self, valid_files: set[str], source_roots: list[Path]) -> int:
+        removed = 0
+        cache_paths = list(self.hash_cache.keys())
+        roots = [r.resolve() for r in source_roots]
+
+        for cached in cache_paths:
+            cached_path = Path(cached)
+            in_target_sources = any(self._is_under(cached_path, root) for root in roots)
+            if not in_target_sources:
                 continue
+            if cached not in valid_files:
+                self.store.delete_by_source(cached)
+                with self._lock:
+                    self.hash_cache.pop(cached, None)
+                removed += 1
+        return removed
 
-            # Identify valid files
-            exts = SUPPORT_EXTS_WITH_CONFIG()
-            files = []
-            for ext in exts:
-                files.extend(root.rglob(f"*{ext}"))
+    def _is_under(self, path: Path, root: Path) -> bool:
+        try:
+            path.resolve().relative_to(root)
+            return True
+        except Exception:
+            return False
 
+    def _index_file(self, filepath: Path, rebuild: bool = False) -> tuple[bool, int]:
+        parsed = parse_file(str(filepath))
+        if parsed is None:
+            return False, 0
+
+        path_key = str(Path(parsed.source).resolve())
+        old_hash = self.hash_cache.get(path_key)
+        if not rebuild and old_hash == parsed.hash:
+            return False, 0
+
+        if old_hash or rebuild:
+            self.store.delete_by_source(path_key)
+
+        chunks = chunk_document(parsed.to_dict())
+        if not chunks:
+            return False, 0
+        self.store.add_chunks([c.to_dict() for c in chunks])
+
+        if path_key.lower().endswith(".pdf"):
+            self._describe_pdf_images(parsed, path_key)
+
+        with self._lock:
+            self.hash_cache[path_key] = parsed.hash
+        return True, len(chunks)
+
+    def sync(self, source_name: Optional[str] = None, rebuild: bool = False) -> dict:
+        started_at = time.time()
+        try:
+            sources = self._iter_sources(source_name)
+        except ValueError as e:
+            return {"status": "error", "message": str(e)}
+
+        scanned = 0
+        indexed = 0
+        skipped = 0
+        total_chunks = 0
+        deleted = 0
+
+        source_roots = [Path(s.path).resolve() for s in sources if Path(s.path).exists()]
+        valid_files: set[str] = set()
+
+        if rebuild:
+            for source in sources:
+                self.store.delete_by_source_name(source.name)
+            for cached in list(self.hash_cache.keys()):
+                cached_path = Path(cached)
+                if any(self._is_under(cached_path, root) for root in source_roots):
+                    self.hash_cache.pop(cached, None)
+
+        for source in sources:
+            files = self._collect_source_files(source)
+            scanned += len(files)
             for filepath in files:
-                if self._should_exclude(filepath):
-                    continue
-                
-                path_str = str(filepath)
-                
-                # Parsing
-                parsed = parse_file(path_str)
-                if parsed is None:
-                    continue
-
-                # Check hash
-                old_hash = self.hash_cache.get(path_str)
-                if not rebuild and old_hash == parsed.hash:
-                    continue
-
-                log.info(f"Indexing: {path_str} (rebuild={rebuild})")
-                
-                # Delete existing if updating
-                if old_hash or rebuild:
-                    self.store.delete_by_source(path_str)
-
+                path_key = str(filepath.resolve())
+                valid_files.add(path_key)
                 try:
-                    # Chunks - use object's to_dict() for chunker
-                    chunks = chunk_document(parsed.to_dict())
-                    self.store.add_chunks([c.to_dict() for c in chunks])
-                    
-                    # Update cache
-                    with self._lock:
-                        self.hash_cache[path_str] = parsed.hash
-                        self._save_manifest()
-                    
-                    log.info(f"Indexed {len(chunks)} chunks from {path_str}")
-
-                    # Run image description if PDF
-                    if path_str.lower().endswith(".pdf"):
-                        self._describe_pdf_images(parsed, path_str)
-
+                    changed, chunks = self._index_file(filepath, rebuild=rebuild)
+                    if changed:
+                        indexed += 1
+                        total_chunks += chunks
+                    else:
+                        skipped += 1
                 except Exception as e:
-                    log.error(f"Failed to index {path_str}: {e}")
+                    skipped += 1
+                    log.error(f"Indexing failed for {filepath}: {e}")
+
+        deleted = self._remove_deleted_files(valid_files, source_roots)
+        self._save_manifest()
+
+        return {
+            "status": "ok",
+            "mode": "rebuild" if rebuild else "incremental",
+            "source_name": source_name,
+            "scanned_files": scanned,
+            "indexed_files": indexed,
+            "skipped_files": skipped,
+            "deleted_files": deleted,
+            "added_chunks": total_chunks,
+            "manifest_entries": len(self.hash_cache),
+            "elapsed_seconds": round(time.time() - started_at, 3),
+        }
+
+    def full_sync(self) -> dict:
+        return self.sync()
+
+    def full_rebuild(self) -> dict:
+        return self.sync(rebuild=True)
+
+    def rebuild_source(self, source_name: str) -> dict:
+        return self.sync(source_name=source_name, rebuild=True)
+
+    def start_watcher(self) -> Optional[Observer]:
+        if not self._config.watchdog.enabled:
+            log.info("Watchdog disabled in config")
+            return None
+        if self._observer and self._observer.is_alive():
+            return self._observer
+
+        observer = Observer()
+        handler = _WatchHandler(self)
+        watched = 0
+        for source in self._iter_sources():
+            root = Path(source.path)
+            if root.exists():
+                observer.schedule(handler, str(root), recursive=source.recursive)
+                watched += 1
+                log.info(f"Watching source: {source.name} ({source.path})")
+
+        if watched == 0:
+            log.warning("No valid source path for watchdog")
+            return None
+
+        observer.start()
+        self._observer = observer
+        return self._observer
+
+    def stop_watcher(self):
+        if self._observer:
+            self._observer.stop()
+            self._observer.join()
+            self._observer = None
+
+    @property
+    def watcher_running(self) -> bool:
+        return bool(self._observer and self._observer.is_alive())
 
     def _describe_pdf_images(self, parsed_doc, filepath: str):
         """Generate image descriptions for a PDF and add as chunks."""
@@ -131,23 +258,20 @@ class IncrementalIndexer:
             return
 
         log.info(f"Generating image descriptions for {filepath}")
-        
         try:
             descriptions = describe_pdf_images(pdf_path=filepath)
         except Exception as e:
             log.warning(f"Image description failed for {filepath}: {e}")
             return
 
-        # Use object properties for safety
-        doc_hash = getattr(parsed_doc, 'hash', '')
-        source = getattr(parsed_doc, 'source', filepath)
-        doc_format = getattr(parsed_doc, 'format', 'pdf')
-        total_chunks = getattr(parsed_doc, 'total_chunks', 0)
-        modified_at = getattr(parsed_doc, 'modified_at', 0)
-        title = getattr(parsed_doc, 'title', '')
-        source_name = getattr(parsed_doc, 'source_name', '')
-        relative_path = getattr(parsed_doc, 'relative_path', '')
-        weight = getattr(parsed_doc, 'weight', 1.0)
+        doc_hash = getattr(parsed_doc, "hash", "")
+        source = getattr(parsed_doc, "source", filepath)
+        doc_format = getattr(parsed_doc, "format", "pdf")
+        modified_at = getattr(parsed_doc, "modified_at", 0)
+        title = getattr(parsed_doc, "title", "")
+        source_name = getattr(parsed_doc, "source_name", "")
+        relative_path = getattr(parsed_doc, "relative_path", "")
+        weight = getattr(parsed_doc, "weight", 1.0)
 
         for desc in descriptions:
             if not desc.description.strip():
@@ -160,7 +284,6 @@ class IncrementalIndexer:
                     "hash": doc_hash,
                     "format": doc_format,
                     "position": desc.page_num,
-                    "total_chunks": total_chunks,
                     "modified_at": modified_at,
                     "title": title,
                     "source_name": source_name,
@@ -173,56 +296,45 @@ class IncrementalIndexer:
             )
             try:
                 self.store.add_chunks([chunk.to_dict()])
-                log.info(f"Added image description for page {desc.page_num}")
             except Exception as e:
                 log.warning(f"Failed to index image description for page {desc.page_num}: {e}")
 
-    def start_watchdog(self):
-        if self._observer:
-            return
-        
-        self._observer = Observer()
-        handler = _WatchHandler(self)
-        
-        for name, root_path in self._config.sources.items():
-            if Path(root_path).exists():
-                self._observer.schedule(handler, root_path, recursive=True)
-                log.info(f"Watching source: {name} ({root_path})")
-            
-        self._observer.start()
-
-    def stop_watchdog(self):
-        if self._observer:
-            self._observer.stop()
-            self._observer.join()
-            self._observer = None
 
 class _WatchHandler(FileSystemEventHandler):
     def __init__(self, indexer: IncrementalIndexer):
         self.indexer = indexer
         self._pending: dict[str, float] = {}
+        self._lock = threading.Lock()
         cfg = indexer._config.watchdog
-        self._debounce = cfg.debounce_seconds
+        self._debounce = max(1, cfg.debounce_seconds)
+        self._timer: Optional[threading.Timer] = None
 
     def on_any_event(self, event):
         if event.is_directory:
             return
+
         p = Path(event.src_path)
-        exts = SUPPORT_EXTS_WITH_CONFIG()
-        if p.suffix.lower() not in exts:
+        if p.suffix.lower() not in SUPPORT_EXTS_WITH_CONFIG():
             return
         if self.indexer._should_exclude(p):
             return
-        with self.indexer._lock:
-            self._pending[event.src_path] = time.time()
-            threading.Timer(self._debounce, self._process).start()
+
+        with self._lock:
+            self._pending[str(p.resolve())] = time.time()
+            if self._timer:
+                self._timer.cancel()
+            self._timer = threading.Timer(self._debounce, self._process)
+            self._timer.daemon = True
+            self._timer.start()
 
     def _process(self):
+        ready: list[str] = []
         now = time.time()
-        with self.indexer._lock:
-            ready = [p for p, t in self._pending.items() if now - t >= self._debounce]
-            for p in ready:
-                del self._pending[p]
+        with self._lock:
+            for path, ts in list(self._pending.items()):
+                if now - ts >= self._debounce:
+                    ready.append(path)
+                    self._pending.pop(path, None)
 
         for filepath in ready:
             p = Path(filepath)
@@ -232,24 +344,9 @@ class _WatchHandler(FileSystemEventHandler):
                     self.indexer.hash_cache.pop(filepath, None)
                     self.indexer._save_manifest()
                 continue
-
-            parsed = parse_file(filepath)
-            if parsed is None:
-                continue
-
-            with self.indexer._lock:
-                old_hash = self.indexer.hash_cache.get(filepath)
-                if old_hash == parsed.hash:
-                    continue
-                if old_hash:
-                    self.indexer.store.delete_by_source(filepath)
-
-                try:
-                    chunks = chunk_document(parsed.to_dict())
-                    self.indexer.store.add_chunks([c.to_dict() for c in chunks])
-                    self.indexer.hash_cache[filepath] = parsed.hash
+            try:
+                changed, _ = self.indexer._index_file(p, rebuild=False)
+                if changed:
                     self.indexer._save_manifest()
-                    if filepath.lower().endswith(".pdf"):
-                        self.indexer._describe_pdf_images(parsed, filepath)
-                except Exception as e:
-                    log.error(f"Watchdog indexing failed for {filepath}: {e}")
+            except Exception as e:
+                log.error(f"Watchdog indexing failed for {filepath}: {e}")
