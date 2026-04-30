@@ -7,6 +7,7 @@ import base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Optional
 
 from logger import setup_logger
 from config import get_config
@@ -128,7 +129,7 @@ def describe_image_api(image_path: str, cfg) -> str:
         return ""
 
 
-def _describe_single_page(img_path: str, page_num: int, cfg, pdf_path: str) -> ImageDescription | None:
+def _describe_single_page(img_path: str, page_num: int, cfg, pdf_path: str) -> Optional[ImageDescription]:
     """Describe one rendered PDF page."""
     if cfg.backend == "api":
         desc = describe_image_api(img_path, cfg)

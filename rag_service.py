@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from collections import deque
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -28,9 +29,6 @@ from retriever import HybridRetriever
 from vector_store import RAGVectorStore
 
 log = setup_logger("rag")
-app = FastAPI(title="RAG Pipeline API", version="0.3.0")
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 store: Optional[RAGVectorStore] = None
 retriever: Optional[HybridRetriever] = None
@@ -281,7 +279,6 @@ def _run_sync(source_name: Optional[str] = None, rebuild: bool = False) -> dict:
         SYNC_LOCK.release()
 
 
-@app.on_event("startup")
 async def startup():
     global store, retriever, indexer
 
@@ -313,11 +310,24 @@ async def startup():
     ).start()
 
 
-@app.on_event("shutdown")
 async def shutdown():
     if indexer:
         indexer.stop_watcher()
     log.info("RAG Pipeline shut down")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await startup()
+    try:
+        yield
+    finally:
+        await shutdown()
+
+
+app = FastAPI(title="RAG Pipeline API", version="0.3.0", lifespan=lifespan)
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 
 
 class SearchRequest(BaseModel):

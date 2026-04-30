@@ -68,7 +68,8 @@ function updateCards(status) {
     card("Chroma Chunks",fmtNum(status.indexes.chroma_chunks)) +
     card("已索引文件",   fmtNum(status.indexes.indexed_files)) +
     card("BM25",  status.indexes.bm25_ready ? "ready" : "未就绪", status.indexes.bm25_ready ? "ok" : "off") +
-    card("文件监听",     status.watcher.running ? "running" : "stopped", status.watcher.running ? "ok" : "off");
+    card("文件监听",     status.watcher.running ? "running" : "stopped", status.watcher.running ? "ok" : "off") +
+    card("关闭请求",     status.shutdown?.requested ? "pending" : "idle", status.shutdown?.requested ? "muted" : "");
 
   const dot = document.getElementById("globalStatus");
   const txt = document.getElementById("globalStatusText");
@@ -276,6 +277,76 @@ async function reloadConfig() {
   }
 }
 
+function openShutdownDialog() {
+  const modal = document.getElementById("shutdownModal");
+  modal.hidden = false;
+  document.getElementById("shutdownForce").checked = false;
+  document.getElementById("shutdownWait").checked = true;
+  document.getElementById("shutdownTimeout").value = "300";
+  document.getElementById("confirmShutdownBtn").disabled = false;
+  document.getElementById("shutdownStateNote").textContent = "正在读取当前索引状态…";
+  refreshShutdownState();
+}
+
+function closeShutdownDialog() {
+  document.getElementById("shutdownModal").hidden = true;
+}
+
+function formatShutdownState(status) {
+  const sync = status.sync || {};
+  const image = status.image_indexing || {};
+  const rows = [
+    `sync: ${sync.running ? sync.mode || "running" : "idle"}`,
+    `image_jobs: pending=${image.pending_jobs || 0}, active=${image.active_jobs || 0}`,
+  ];
+  if (status.shutdown?.requested) rows.push("shutdown: requested");
+  return rows.join("\n");
+}
+
+async function refreshShutdownState() {
+  try {
+    const status = await callApi("/status");
+    document.getElementById("shutdownStateNote").textContent = formatShutdownState(status);
+  } catch (e) {
+    document.getElementById("shutdownStateNote").textContent = "status: unavailable";
+  }
+}
+
+async function shutdownService() {
+  const btn = document.getElementById("confirmShutdownBtn");
+  const wait_for_indexing = document.getElementById("shutdownWait").checked;
+  const force = document.getElementById("shutdownForce").checked;
+  const timeout_seconds = Math.max(0, Math.min(3600, parseInt(document.getElementById("shutdownTimeout").value, 10) || 0));
+
+  btn.disabled = true;
+  toast("正在提交关闭请求…", "info", 2500);
+  updateResultBox({ status: "running", action: "shutdown", wait_for_indexing, timeout_seconds, force });
+
+  try {
+    const res = await callApi("/shutdown", "POST", {
+      wait_for_indexing,
+      timeout_seconds,
+      force,
+      reason: "dashboard",
+    });
+    updateResultBox(res);
+    document.getElementById("shutdownStateNote").textContent = JSON.stringify(res.indexing || {}, null, 2);
+
+    if (res.status === "shutting_down") {
+      toast("服务正在关闭", "success", 4000);
+      setTimeout(refreshStatus, 1200);
+      return;
+    }
+
+    toast(res.message || "关闭请求未执行", "error", 4500);
+    btn.disabled = false;
+  } catch (e) {
+    toast("关闭请求失败: " + String(e), "error", 4500);
+    updateResultBox({ error: String(e), action: "shutdown" });
+    btn.disabled = false;
+  }
+}
+
 function renderResults(data) {
   const box = document.getElementById("searchResults");
   const meta = document.getElementById("searchMeta");
@@ -359,6 +430,14 @@ setInterval(refreshStatus, 8000);
 setInterval(refreshLogs, 5000);
 
 document.getElementById("logLevel")?.addEventListener("change", () => refreshLogs(true));
+document.getElementById("shutdownModal")?.addEventListener("click", (event) => {
+  if (event.target.id === "shutdownModal") closeShutdownDialog();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !document.getElementById("shutdownModal")?.hidden) {
+    closeShutdownDialog();
+  }
+});
 
 document.querySelectorAll(".nav-item").forEach(item => {
   item.addEventListener("click", () => {

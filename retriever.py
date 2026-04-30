@@ -17,7 +17,7 @@ import threading
 import jieba
 import rank_bm25
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from config import get_config
 from vector_store import RAGVectorStore
@@ -32,7 +32,7 @@ class HybridRetriever:
         self._config = config_override or get_config()
         self.store = store
         self.reranker = RerankerClient(config_override)
-        self.bm25: Optional[rank_bm25.BM25Okapi] = None
+        self.bm25: Optional[Any] = None
         self.bm25_docs: list[str] = []
         self.bm25_ids: list[str] = []
         self._bm25_signature = ""

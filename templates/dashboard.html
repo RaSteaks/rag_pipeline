@@ -73,6 +73,10 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           重载配置
         </button>
+        <button class="btn btn-danger" onclick="openShutdownDialog()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          关闭服务
+        </button>
       </div>
     </header>
 
@@ -259,6 +263,44 @@
 
     </div>
   </main>
+
+  <div id="shutdownModal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="shutdownModalTitle">
+      <div class="modal-header">
+        <div>
+          <div id="shutdownModalTitle" class="modal-title">关闭 RAG 服务</div>
+          <div class="modal-sub">系统会先停止文件监听，并等待正在运行的索引任务结束。</div>
+        </div>
+        <button class="icon-btn" aria-label="关闭弹窗" onclick="closeShutdownDialog()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="shutdown-options">
+          <label class="toggle-label">
+            <input id="shutdownWait" type="checkbox" checked />
+            <span>等待索引任务完成</span>
+          </label>
+          <label class="field-group shutdown-timeout">
+            <span class="field-label">等待超时（秒）</span>
+            <input id="shutdownTimeout" class="input" type="number" min="0" max="3600" value="300" />
+          </label>
+          <label class="toggle-label danger-toggle">
+            <input id="shutdownForce" type="checkbox" />
+            <span>强制关闭</span>
+          </label>
+        </div>
+        <div class="shutdown-note" id="shutdownStateNote"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeShutdownDialog()">取消</button>
+        <button class="btn btn-danger" id="confirmShutdownBtn" onclick="shutdownService()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          确认关闭
+        </button>
+      </div>
+    </div>
+  </div>
 
   <div id="toastContainer" class="toast-container"></div>
 
