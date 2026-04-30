@@ -37,6 +37,11 @@ indexer: Optional[IncrementalIndexer] = None
 started_at = time.time()
 last_sync_at: Optional[float] = None
 last_sync_result: Optional[dict] = None
+sync_running = False
+sync_mode: Optional[str] = None
+sync_started_at: Optional[float] = None
+sync_error: Optional[str] = None
+SYNC_LOCK = threading.Lock()
 
 LOG_BUFFER_MAX = 1000
 LOG_BUFFER = deque(maxlen=LOG_BUFFER_MAX)
@@ -144,13 +149,69 @@ def _runtime_status() -> dict:
             "enabled_source_count": len([s for s in cfg.knowledge_sources if s.enabled]),
             "sources": source_items,
         },
+        "sync": {
+            "running": sync_running,
+            "mode": sync_mode,
+            "started_at": sync_started_at,
+            "error": sync_error,
+        },
         "last_sync": {"at": last_sync_at, "result": last_sync_result},
     }
 
 
+def _sync_mode_name(source_name: Optional[str], rebuild: bool) -> str:
+    if rebuild and source_name:
+        return f"rebuild:{source_name}"
+    if rebuild:
+        return "full_rebuild"
+    if source_name:
+        return f"sync_source:{source_name}"
+    return "full_sync"
+
+
+def _run_sync(source_name: Optional[str] = None, rebuild: bool = False) -> dict:
+    global last_sync_at, last_sync_result, sync_running, sync_mode, sync_started_at, sync_error
+
+    if indexer is None:
+        return {"status": "error", "message": "Service not initialized"}
+    if not SYNC_LOCK.acquire(blocking=False):
+        return {"status": "busy", "message": "Sync already running", "mode": sync_mode}
+
+    sync_running = True
+    sync_mode = _sync_mode_name(source_name, rebuild)
+    sync_started_at = time.time()
+    sync_error = None
+
+    try:
+        if rebuild and source_name:
+            result = indexer.rebuild_source(source_name)
+        elif rebuild:
+            result = indexer.full_rebuild()
+        elif source_name:
+            result = indexer.rebuild_source(source_name)
+        else:
+            result = indexer.full_sync()
+
+        if retriever:
+            retriever.rebuild_bm25()
+
+        last_sync_at = time.time()
+        last_sync_result = result
+        log.info(f"Sync result: {result}")
+        return result
+    except Exception as e:
+        sync_error = str(e)
+        log.exception(f"Sync failed: {e}")
+        return {"status": "error", "message": str(e), "mode": sync_mode}
+    finally:
+        sync_running = False
+        sync_mode = None
+        SYNC_LOCK.release()
+
+
 @app.on_event("startup")
 async def startup():
-    global store, retriever, indexer, last_sync_at, last_sync_result
+    global store, retriever, indexer
 
     cfg = get_config()
     log.info(f"RAG Pipeline starting on {cfg.server.host}:{cfg.server.port}")
@@ -164,15 +225,19 @@ async def startup():
 
     store = RAGVectorStore()
     indexer = IncrementalIndexer(store)
-
-    log.info("Running initial sync...")
-    result = indexer.full_sync()
-    last_sync_result = result
-    last_sync_at = time.time()
-    log.info(f"Initial sync done: {result}")
-
     retriever = HybridRetriever(store)
     indexer.start_watcher()
+
+    def _initial_sync_job():
+        log.info("Running initial sync in background...")
+        result = _run_sync()
+        log.info(f"Initial sync finished: {result}")
+
+    threading.Thread(
+        target=_initial_sync_job,
+        name="initial-sync",
+        daemon=True,
+    ).start()
 
 
 @app.on_event("shutdown")
@@ -365,27 +430,8 @@ async def search(req: SearchRequest):
 
 @app.post("/sync")
 async def sync(req: Optional[SyncRequest] = None):
-    global last_sync_at, last_sync_result
-    if indexer is None:
-        return {"error": "Service not initialized"}
-
     payload = req or SyncRequest()
-    if payload.rebuild and payload.source_name:
-        result = indexer.rebuild_source(payload.source_name)
-    elif payload.rebuild:
-        result = indexer.full_rebuild()
-    elif payload.source_name:
-        result = indexer.rebuild_source(payload.source_name)
-    else:
-        result = indexer.full_sync()
-
-    if retriever:
-        retriever.rebuild_bm25()
-
-    last_sync_at = time.time()
-    last_sync_result = result
-    log.info(f"Sync result: {result}")
-    return result
+    return _run_sync(payload.source_name, payload.rebuild)
 
 
 @app.post("/reload-config")
