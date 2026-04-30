@@ -298,7 +298,11 @@ def _apply_runtime_reload() -> dict:
 
 @app.get("/")
 async def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    return templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={"request": request},
+    )
 
 
 @app.get("/health")
