@@ -31,9 +31,9 @@ class RerankerConfig(BaseModel):
 
 
 class IndexesConfig(BaseModel):
-    chroma_path: str = ""
-    bm25_path: str = ""
-    manifest_path: str = ""
+    chroma_path: str = "chromadb"
+    bm25_path: str = "bm25_index"
+    manifest_path: str = "index_manifest.json"
 
 
 class RetrievalConfig(BaseModel):
@@ -151,6 +151,25 @@ def write_config_with_backup(path: str | Path, text: str, max_backups: int = 5) 
     return backup_path
 
 
+def _model_to_dict(model: BaseModel) -> dict:
+    return model.model_dump() if hasattr(model, "model_dump") else model.dict()
+
+
+def create_default_config(path: str | Path) -> Path:
+    """Create a default config.yaml so the service can boot on first run."""
+    config_path = Path(path)
+    if config_path.parent != Path("."):
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    default_text = yaml.safe_dump(
+        _model_to_dict(AppConfig()),
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    config_path.write_text(default_text, encoding="utf-8")
+    return config_path
+
+
 def load_config(path: str = "") -> AppConfig:
     """Load and validate config from YAML file."""
     if not path:
@@ -158,7 +177,8 @@ def load_config(path: str = "") -> AppConfig:
         path = str(Path(__file__).parent / "config.yaml")
     config_path = Path(path)
     if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
+        create_default_config(config_path)
+        print(f"Config file not found, created default config: {config_path}")
 
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)

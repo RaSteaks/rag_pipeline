@@ -18,7 +18,7 @@ log = setup_logger("rag")
 class RAGVectorStore:
     def __init__(self, config_override=None):
         self._config = config_override or get_config()
-        persist_dir = self._config.indexes.chroma_path
+        persist_dir = self._config.indexes.chroma_path or str(Path(__file__).parent / "chromadb")
         Path(persist_dir).mkdir(parents=True, exist_ok=True)
 
         self.client = chromadb.PersistentClient(path=persist_dir)

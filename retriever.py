@@ -41,7 +41,7 @@ class HybridRetriever:
 
     @property
     def _bm25_cache_path(self) -> Path:
-        bm25_dir = Path(self._config.indexes.bm25_path)
+        bm25_dir = Path(self._config.indexes.bm25_path or (Path(__file__).parent / "bm25_index"))
         bm25_dir.mkdir(parents=True, exist_ok=True)
         return bm25_dir / "bm25_index.json"
 
