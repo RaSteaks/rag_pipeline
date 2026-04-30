@@ -1,5 +1,7 @@
 """RAG Pipeline API server + status dashboard."""
 import logging
+import os
+import signal
 import sys
 import threading
 import time
@@ -41,6 +43,9 @@ sync_running = False
 sync_mode: Optional[str] = None
 sync_started_at: Optional[float] = None
 sync_error: Optional[str] = None
+shutdown_requested = False
+shutdown_started_at: Optional[float] = None
+shutdown_reason: Optional[str] = None
 SYNC_LOCK = threading.Lock()
 
 LOG_BUFFER_MAX = 1000
@@ -149,6 +154,7 @@ def _runtime_status() -> dict:
         "image_indexing": {
             "enabled": cfg.image_description.enabled,
             "pending_jobs": indexer.image_jobs_pending if indexer else 0,
+            "active_jobs": indexer.image_jobs_active if indexer else 0,
         },
         "config": {
             "source_count": len(cfg.knowledge_sources),
@@ -162,6 +168,11 @@ def _runtime_status() -> dict:
             "error": sync_error,
         },
         "last_sync": {"at": last_sync_at, "result": last_sync_result},
+        "shutdown": {
+            "requested": shutdown_requested,
+            "started_at": shutdown_started_at,
+            "reason": shutdown_reason,
+        },
     }
 
 
@@ -182,11 +193,59 @@ def _rebuild_bm25_after_index_change(reason: str):
     retriever.rebuild_bm25()
 
 
+def _indexing_state() -> dict:
+    image_pending = indexer.image_jobs_pending if indexer else 0
+    image_active = indexer.image_jobs_active if indexer else 0
+    return {
+        "busy": bool(sync_running or image_pending or image_active),
+        "sync": {
+            "running": sync_running,
+            "mode": sync_mode,
+            "started_at": sync_started_at,
+        },
+        "image_indexing": {
+            "pending_jobs": image_pending,
+            "active_jobs": image_active,
+        },
+    }
+
+
+def _wait_for_indexing_idle(timeout_seconds: int) -> tuple[bool, dict]:
+    deadline = time.time() + max(0, timeout_seconds)
+    state = _indexing_state()
+    while state["busy"]:
+        if time.time() >= deadline:
+            return False, state
+        time.sleep(0.5)
+        state = _indexing_state()
+    return True, state
+
+
+def _signal_process_shutdown(delay_seconds: float = 0.5):
+    def _job():
+        time.sleep(delay_seconds)
+        log.info("Stopping RAG Pipeline process")
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=_job, name="shutdown-signal", daemon=True).start()
+
+
+def _cancel_shutdown_request():
+    global shutdown_requested, shutdown_started_at, shutdown_reason
+    shutdown_requested = False
+    shutdown_started_at = None
+    shutdown_reason = None
+    if indexer:
+        indexer.start_watcher()
+
+
 def _run_sync(source_name: Optional[str] = None, rebuild: bool = False) -> dict:
     global last_sync_at, last_sync_result, sync_running, sync_mode, sync_started_at, sync_error
 
     if indexer is None:
         return {"status": "error", "message": "Service not initialized"}
+    if shutdown_requested:
+        return {"status": "shutting_down", "message": "Shutdown already requested"}
     if not SYNC_LOCK.acquire(blocking=False):
         return {"status": "busy", "message": "Sync already running", "mode": sync_mode}
 
@@ -270,6 +329,13 @@ class SearchRequest(BaseModel):
 class SyncRequest(BaseModel):
     source_name: Optional[str] = None
     rebuild: bool = False
+
+
+class ShutdownRequest(BaseModel):
+    wait_for_indexing: bool = True
+    timeout_seconds: int = Field(default=300, ge=0, le=3600)
+    force: bool = False
+    reason: Optional[str] = "update"
 
 
 class ConfigTextUpdateRequest(BaseModel):
@@ -457,6 +523,47 @@ async def search(req: SearchRequest):
 async def sync(req: Optional[SyncRequest] = None):
     payload = req or SyncRequest()
     return _run_sync(payload.source_name, payload.rebuild)
+
+
+@app.post("/shutdown")
+def shutdown_system(req: Optional[ShutdownRequest] = None):
+    global shutdown_requested, shutdown_started_at, shutdown_reason
+
+    payload = req or ShutdownRequest()
+    shutdown_requested = True
+    shutdown_started_at = time.time()
+    shutdown_reason = payload.reason
+
+    if indexer:
+        indexer.stop_file_watcher()
+
+    state = _indexing_state()
+    if state["busy"] and payload.wait_for_indexing and not payload.force:
+        ok, state = _wait_for_indexing_idle(payload.timeout_seconds)
+        if not ok:
+            _cancel_shutdown_request()
+            return {
+                "status": "busy",
+                "message": "Indexing is still running; shutdown was not started",
+                "indexing": state,
+            }
+
+    if state["busy"] and not payload.force:
+        _cancel_shutdown_request()
+        return {
+            "status": "busy",
+            "message": "Indexing is running; set wait_for_indexing=true or force=true",
+            "indexing": state,
+        }
+
+    log.info(f"Shutdown requested: reason={payload.reason}, force={payload.force}")
+    _signal_process_shutdown()
+    return {
+        "status": "shutting_down",
+        "reason": payload.reason,
+        "force": payload.force,
+        "indexing": state,
+    }
 
 
 @app.post("/reload-config")

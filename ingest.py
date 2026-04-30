@@ -25,10 +25,12 @@ class IncrementalIndexer:
         self.store = store or RAGVectorStore(config_override=self._config)
         self._lock = threading.Lock()
         self._observer: Optional[Observer] = None
+        self.accepting_watch_events = True
         self.on_index_changed: Optional[Callable[[str], None]] = None
         self._image_jobs: queue.Queue[tuple[dict, str]] = queue.Queue()
         self._image_job_keys: set[tuple[str, str]] = set()
         self._image_jobs_lock = threading.Lock()
+        self._image_jobs_active = 0
         self._image_worker: Optional[threading.Thread] = None
         self._image_worker_stop = threading.Event()
 
@@ -233,6 +235,7 @@ class IncrementalIndexer:
         if self._observer and self._observer.is_alive():
             return self._observer
 
+        self.accepting_watch_events = True
         observer = Observer()
         handler = _WatchHandler(self)
         watched = 0
@@ -251,11 +254,15 @@ class IncrementalIndexer:
         self._observer = observer
         return self._observer
 
-    def stop_watcher(self):
+    def stop_file_watcher(self):
+        self.accepting_watch_events = False
         if self._observer:
             self._observer.stop()
             self._observer.join()
             self._observer = None
+
+    def stop_watcher(self):
+        self.stop_file_watcher()
         self.stop_background_workers()
 
     @property
@@ -265,6 +272,24 @@ class IncrementalIndexer:
     @property
     def image_jobs_pending(self) -> int:
         return self._image_jobs.qsize()
+
+    @property
+    def image_jobs_active(self) -> int:
+        with self._image_jobs_lock:
+            return self._image_jobs_active
+
+    @property
+    def image_indexing_busy(self) -> bool:
+        unfinished = getattr(self._image_jobs, "unfinished_tasks", 0)
+        return unfinished > 0 or self.image_jobs_active > 0
+
+    def wait_for_background_jobs(self, timeout_seconds: float = 300) -> bool:
+        deadline = time.time() + max(0, timeout_seconds)
+        while self.image_indexing_busy:
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.5)
+        return True
 
     def stop_background_workers(self):
         self._image_worker_stop.set()
@@ -317,9 +342,12 @@ class IncrementalIndexer:
 
             doc_hash = parsed_doc.get("hash", "")
             try:
+                with self._image_jobs_lock:
+                    self._image_jobs_active += 1
                 self._describe_pdf_images(parsed_doc, filepath)
             finally:
                 with self._image_jobs_lock:
+                    self._image_jobs_active = max(0, self._image_jobs_active - 1)
                     self._image_job_keys.discard((filepath, doc_hash))
                 self._image_jobs.task_done()
 
@@ -426,6 +454,8 @@ class _WatchHandler(FileSystemEventHandler):
         self._timer: Optional[threading.Timer] = None
 
     def on_any_event(self, event):
+        if not self.indexer.accepting_watch_events:
+            return
         if event.is_directory:
             return
 
@@ -444,6 +474,8 @@ class _WatchHandler(FileSystemEventHandler):
             self._timer.start()
 
     def _process(self):
+        if not self.indexer.accepting_watch_events:
+            return
         ready: list[str] = []
         now = time.time()
         with self._lock:

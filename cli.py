@@ -4,6 +4,7 @@
 Usage:
   python cli.py search "query" [--top-k 5] [--debug]
   python cli.py sync [--source NAME] [--rebuild]
+  python cli.py shutdown [--timeout 300] [--force]
   python cli.py stats
 """
 import sys
@@ -69,6 +70,30 @@ def stats():
         return {"error": str(e)}
 
 
+def shutdown(wait_for_indexing: bool = True, timeout_seconds: int = 300, force: bool = False):
+    """Safely stop the RAG service before an update."""
+    import requests
+    config = get_config()
+    url = f"http://{config.server.host}:{config.server.port}/shutdown"
+    try:
+        resp = requests.post(
+            url,
+            json={
+                "wait_for_indexing": wait_for_indexing,
+                "timeout_seconds": timeout_seconds,
+                "force": force,
+                "reason": "update",
+            },
+            timeout=timeout_seconds + 10,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except requests.exceptions.ConnectionError:
+        return {"status": "stopped", "message": "RAG service is not running"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def main():
     parser = argparse.ArgumentParser(description="RAG Pipeline CLI")
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
@@ -87,6 +112,12 @@ def main():
     # Stats command
     subparsers.add_parser("stats", help="Show index statistics")
 
+    # Shutdown command
+    shutdown_cmd = subparsers.add_parser("shutdown", help="Safely stop the RAG service")
+    shutdown_cmd.add_argument("--timeout", type=int, default=300, help="Seconds to wait for indexing")
+    shutdown_cmd.add_argument("--no-wait", action="store_true", help="Do not wait if indexing is active")
+    shutdown_cmd.add_argument("--force", action="store_true", help="Stop even if indexing is active")
+
     args = parser.parse_args()
 
     if args.command == "search":
@@ -95,6 +126,12 @@ def main():
         result = sync(args.source, args.rebuild)
     elif args.command == "stats":
         result = stats()
+    elif args.command == "shutdown":
+        result = shutdown(
+            wait_for_indexing=not args.no_wait,
+            timeout_seconds=args.timeout,
+            force=args.force,
+        )
     else:
         parser.print_help()
         return
