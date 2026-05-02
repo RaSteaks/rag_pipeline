@@ -4,13 +4,31 @@ All configurations are loaded from config.yaml via config.py.
 No hardcoded paths or API keys should exist here.
 """
 import base64
+import os
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass
+from typing import Optional
 
 from logger import setup_logger
 from config import get_config
 
 log = setup_logger("rag")
+
+
+@contextmanager
+def _suppress_mupdf_stderr():
+    """Hide non-fatal MuPDF diagnostics printed directly to stderr."""
+    stderr_fd = 2
+    saved_fd = os.dup(stderr_fd)
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), stderr_fd)
+            yield
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(saved_fd)
 
 @dataclass
 class ImageDescription:
@@ -25,22 +43,23 @@ def render_pdf_pages(pdf_path: str, output_dir: str,
     """Render PDF pages as PNG images using PyMuPDF."""
     import fitz
 
-    doc = fitz.open(pdf_path)
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    with _suppress_mupdf_stderr():
+        doc = fitz.open(pdf_path)
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
 
-    image_paths = []
-    for page_num in range(min(len(doc), max_pages)):
-        page = doc[page_num]
-        zoom = dpi / 72
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat)
+        image_paths = []
+        for page_num in range(min(len(doc), max_pages)):
+            page = doc[page_num]
+            zoom = dpi / 72
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB, alpha=False, annots=False)
 
-        image_path = str(out / f"page_{page_num + 1}.png")
-        pix.save(image_path)
-        image_paths.append(image_path)
+            image_path = str(out / f"page_{page_num + 1}.png")
+            pix.save(image_path)
+            image_paths.append(image_path)
 
-    doc.close()
+        doc.close()
     return image_paths
 
 
@@ -66,7 +85,7 @@ def describe_image_llamacpp(image_path: str, cfg) -> str:
             "max_tokens": 512,
             "temperature": 0.3,
         }
-        resp = requests.post(f"{cfg.endpoint}/v1/chat/completions", json=payload, timeout=60)
+        resp = requests.post(f"{cfg.endpoint}/v1/chat/completions", json=payload, timeout=180)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
@@ -119,12 +138,31 @@ def describe_image_api(image_path: str, cfg) -> str:
             "temperature": 0.3,
         }
         headers = {"Content-Type": "application/json", "Authorization": f"Bearer {cfg.api_key}"}
-        resp = requests.post(f"{cfg.api_base_url}/chat/completions", json=payload, headers=headers, timeout=30)
+        resp = requests.post(f"{cfg.api_base_url}/chat/completions", json=payload, headers=headers, timeout=180)
         resp.raise_for_status()
         return resp.json()["choices"][0]["message"]["content"]
     except Exception as e:
         log.warning(f"Vision API failed: {e}")
         return ""
+
+
+def _describe_single_page(img_path: str, page_num: int, cfg, pdf_path: str) -> Optional[ImageDescription]:
+    """Describe one rendered PDF page."""
+    if cfg.backend == "api":
+        desc = describe_image_api(img_path, cfg)
+    elif cfg.backend == "local":
+        desc = describe_image_local(img_path, cfg)
+    else:
+        desc = describe_image_llamacpp(img_path, cfg)
+
+    if not desc:
+        return None
+    return ImageDescription(
+        page_num=page_num,
+        description=desc,
+        image_path=img_path,
+        source=pdf_path,
+    )
 
 
 def describe_pdf_images(pdf_path: str) -> list[ImageDescription]:
@@ -149,28 +187,33 @@ def describe_pdf_images(pdf_path: str) -> list[ImageDescription]:
     log.info(f"Rendered {len(image_paths)} pages from {pdf_name}")
 
     descriptions = []
-    for i, img_path in enumerate(image_paths):
-        page_num = i + 1
-        log.info(f"Describing page {page_num}/{len(image_paths)} of {pdf_name} [backend: {cfg.backend}]")
+    max_workers = max(1, int(getattr(cfg, "max_workers", 4) or 4))
+    max_workers = min(max_workers, len(image_paths))
+    log.info(
+        f"Describing {len(image_paths)} pages from {pdf_name} "
+        f"with {max_workers} workers [backend: {cfg.backend}]"
+    )
 
-        desc = ""
-        if cfg.backend == "api":
-            desc = describe_image_api(img_path, cfg)
-        elif cfg.backend == "local":
-            desc = describe_image_local(img_path, cfg)
-        else:  # server
-            desc = describe_image_llamacpp(img_path, cfg)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_describe_single_page, img_path, i + 1, cfg, pdf_path): i + 1
+            for i, img_path in enumerate(image_paths)
+        }
 
-        if desc:
-            descriptions.append(ImageDescription(
-                page_num=page_num,
-                description=desc,
-                image_path=img_path,
-                source=pdf_path,
-            ))
-            log.debug(f"Page {page_num}: {desc[:100]}...")
-        else:
-            log.warning(f"Page {page_num}: description empty, skipping")
+        for future in as_completed(futures):
+            page_num = futures[future]
+            try:
+                item = future.result()
+            except Exception as e:
+                log.warning(f"Page {page_num}: image description failed: {e}")
+                continue
 
+            if item:
+                descriptions.append(item)
+                log.debug(f"Page {page_num}: {item.description[:100]}...")
+            else:
+                log.warning(f"Page {page_num}: description empty, skipping")
+
+    descriptions.sort(key=lambda item: item.page_num)
     log.info(f"Generated {len(descriptions)} image descriptions for {pdf_name}")
     return descriptions

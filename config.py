@@ -1,5 +1,6 @@
 ﻿"""Configuration loader with Pydantic validation."""
 from pathlib import Path
+import shutil
 from typing import List, Optional
 import yaml
 from pydantic import BaseModel, validator
@@ -24,12 +25,15 @@ class RerankerConfig(BaseModel):
     timeout_seconds: int = 20
     max_candidates: int = 20
     fallback_to_rrf: bool = True
+    skip_if_unavailable: Optional[bool] = None
+    circuit_breaker_failures: int = 3
+    circuit_breaker_cooldown_seconds: int = 60
 
 
 class IndexesConfig(BaseModel):
-    chroma_path: str = ""
-    bm25_path: str = ""
-    manifest_path: str = ""
+    chroma_path: str = "chromadb"
+    bm25_path: str = "bm25_index"
+    manifest_path: str = "index_manifest.json"
 
 
 class RetrievalConfig(BaseModel):
@@ -79,6 +83,7 @@ class ImageDescriptionConfig(BaseModel):
     output_path: str = ""  # 新增
     dpi: int = 150
     max_pages_per_pdf: int = 50
+    max_workers: int = 4
     prompt: str = ""
     # API backend config (only used when backend="api")
     # api_key: OpenRouter key (sk-or-v1-xxx) or OpenAI key (sk-xxx)
@@ -104,6 +109,67 @@ class AppConfig(BaseModel):
     image_description: ImageDescriptionConfig = ImageDescriptionConfig()
 
 
+def _config_backup_paths(config_path: Path, max_backups: int) -> list[Path]:
+    if max_backups <= 0:
+        return []
+    paths = [config_path.with_name(f"{config_path.name}.bak")]
+    paths.extend(config_path.with_name(f"{config_path.name}.bak.{i}") for i in range(1, max_backups))
+    return paths
+
+
+def backup_config_file(path: str | Path, max_backups: int = 5) -> Optional[Path]:
+    """Create a rotating backup before changing config.yaml."""
+    config_path = Path(path)
+    if max_backups <= 0 or not config_path.exists():
+        return None
+
+    backup_paths = _config_backup_paths(config_path, max_backups)
+    if not backup_paths:
+        return None
+
+    oldest = backup_paths[-1]
+    if oldest.exists():
+        oldest.unlink()
+
+    for src, dst in reversed(list(zip(backup_paths[:-1], backup_paths[1:]))):
+        if src.exists():
+            src.replace(dst)
+
+    shutil.copy2(config_path, backup_paths[0])
+    return backup_paths[0]
+
+
+def write_config_with_backup(path: str | Path, text: str, max_backups: int = 5) -> Optional[Path]:
+    """Write config text, backing up the existing file when contents change."""
+    config_path = Path(path)
+    old_text = config_path.read_text(encoding="utf-8") if config_path.exists() else None
+    backup_path = None
+    if old_text is not None and old_text != text:
+        backup_path = backup_config_file(config_path, max_backups=max_backups)
+
+    config_path.write_text(text, encoding="utf-8")
+    return backup_path
+
+
+def _model_to_dict(model: BaseModel) -> dict:
+    return model.model_dump() if hasattr(model, "model_dump") else model.dict()
+
+
+def create_default_config(path: str | Path) -> Path:
+    """Create a default config.yaml so the service can boot on first run."""
+    config_path = Path(path)
+    if config_path.parent != Path("."):
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    default_text = yaml.safe_dump(
+        _model_to_dict(AppConfig()),
+        allow_unicode=True,
+        sort_keys=False,
+    )
+    config_path.write_text(default_text, encoding="utf-8")
+    return config_path
+
+
 def load_config(path: str = "") -> AppConfig:
     """Load and validate config from YAML file."""
     if not path:
@@ -111,7 +177,8 @@ def load_config(path: str = "") -> AppConfig:
         path = str(Path(__file__).parent / "config.yaml")
     config_path = Path(path)
     if not config_path.exists():
-        raise FileNotFoundError(f"Config file not found: {path}")
+        create_default_config(config_path)
+        print(f"Config file not found, created default config: {config_path}")
 
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)

@@ -9,6 +9,8 @@ Long texts are truncated to MAX_TEXT_LENGTH chars to avoid 500 errors from conte
 Falls back to RRF scores when the reranker is unavailable (timeout/connection error).
 """
 import requests
+import threading
+import time
 from config import get_config
 from logger import setup_logger
 log = setup_logger("rag")
@@ -19,6 +21,9 @@ class RerankerClient:
 
     def __init__(self, config_override=None):
         self._config = config_override or get_config()
+        self._lock = threading.Lock()
+        self._failure_count = 0
+        self._circuit_open_until = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -30,7 +35,36 @@ class RerankerClient:
 
     @property
     def fallback_to_rrf(self) -> bool:
-        return self._config.reranker.fallback_to_rrf
+        cfg = self._config.reranker
+        if cfg.skip_if_unavailable is not None:
+            return cfg.skip_if_unavailable
+        return cfg.fallback_to_rrf
+
+    @property
+    def circuit_state(self) -> dict:
+        with self._lock:
+            now = time.time()
+            return {
+                "open": self._circuit_open_until > now,
+                "open_until": self._circuit_open_until if self._circuit_open_until > now else None,
+                "failure_count": self._failure_count,
+            }
+
+    def _record_success(self):
+        with self._lock:
+            self._failure_count = 0
+            self._circuit_open_until = 0.0
+
+    def _record_failure(self, reason: str):
+        cfg = self._config.reranker
+        with self._lock:
+            self._failure_count += 1
+            if self._failure_count >= max(1, cfg.circuit_breaker_failures):
+                self._circuit_open_until = time.time() + max(1, cfg.circuit_breaker_cooldown_seconds)
+                log.warning(
+                    "Reranker circuit opened for "
+                    f"{cfg.circuit_breaker_cooldown_seconds}s after {self._failure_count} failures: {reason}"
+                )
 
     def rerank(self, query: str, texts: list[str],
                top_k: int = None) -> list[tuple[int, float]] | None:
@@ -51,6 +85,11 @@ class RerankerClient:
         texts = [t[:MAX_TEXT_LENGTH] if len(t) > MAX_TEXT_LENGTH else t
                  for t in texts[:max_candidates]]
 
+        with self._lock:
+            if self._circuit_open_until > time.time():
+                log.info("Reranker circuit open, using RRF order")
+                return None
+
         try:
             # llama.cpp rerank endpoint: /v1/rerank (with --rerank flag)
             resp = requests.post(
@@ -63,13 +102,12 @@ class RerankerClient:
                 timeout=cfg.timeout_seconds,
             )
             resp.raise_for_status()
-            data = resp.json()
-
             # llama.cpp /v1/rerank returns {"results": [{"index": 0, "relevance_score": 0.99}, ...]}
             data = resp.json()
             results = data.get("results", [])
             if not results:
-                print(f"Reranker returned empty results")
+                log.warning("Reranker returned empty results")
+                self._record_failure("empty results")
                 return None
 
             # Map relevance scores back to original order
@@ -82,14 +120,18 @@ class RerankerClient:
                     scores[idx] = score
 
             ranked = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+            self._record_success()
             return ranked
 
-        except requests.exceptions.ConnectionError:
-            log.info("Reranker service not available, falling back to RRF")
+        except requests.exceptions.ConnectionError as e:
+            log.info("Reranker service not available, using RRF order")
+            self._record_failure(str(e))
             return None
-        except requests.exceptions.Timeout:
-            log.info("Reranker timeout, falling back to RRF")
+        except requests.exceptions.Timeout as e:
+            log.info("Reranker timeout, using RRF order")
+            self._record_failure(str(e))
             return None
         except Exception as e:
-            print(f"Reranker error: {e}, falling back to RRF")
+            log.warning(f"Reranker error, using RRF order: {e}")
+            self._record_failure(str(e))
             return None

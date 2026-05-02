@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Pipeline Dashboard</title>
+  <link rel="icon" href="{{ url_for('static', path='favicon.ico') }}" sizes="any" />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', path='dashboard.css') }}" />
+</head>
+<body>
+
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="brand-icon">⚡</div>
+      <div class="brand-text">
+        <div class="brand-name">RAG Pipeline</div>
+        <div class="brand-sub">管控台</div>
+      </div>
+    </div>
+    <nav class="sidebar-nav">
+      <a class="nav-item active" href="#status">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/></svg>
+        系统状态
+      </a>
+      <a class="nav-item" href="#sources">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h18v4H3zM3 10h18v4H3zM3 17h18v4H3z"/></svg>
+        知识源
+      </a>
+      <a class="nav-item" href="#search">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        搜索测试
+      </a>
+      <a class="nav-item" href="#config">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        配置编辑
+      </a>
+      <a class="nav-item" href="#result">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        操作结果
+      </a>
+      <a class="nav-item" href="#logs">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        服务日志
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status-dot" id="globalStatus"></div>
+      <span id="globalStatusText">连接中...</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1>系统状态控制台</h1>
+        <p class="topbar-sub">Embedding · Reranker · 索引 · 向量库</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" onclick="refreshStatus()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+          刷新
+        </button>
+        <button class="btn btn-primary" onclick="runSync(false)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          增量同步
+        </button>
+        <button class="btn btn-warn" onclick="runSync(true)">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          全量重建
+        </button>
+        <button class="btn btn-ghost" onclick="reloadConfig()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          重载配置
+        </button>
+        <button class="btn btn-danger" onclick="openShutdownDialog()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          关闭服务
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <section id="status" class="section">
+        <div class="section-label">实时状态</div>
+        <div class="cards-grid" id="cards"></div>
+      </section>
+
+      <section id="sources" class="section">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">知识源管理</div>
+          </div>
+          <div class="panel-body">
+            <div class="inline-form">
+              <span class="form-label">按知识源重建</span>
+              <select id="sourceName" class="select"></select>
+              <button class="btn btn-primary btn-sm" onclick="rebuildSource()">执行重建</button>
+              <span class="hint-text">仅对所选知识源重建向量索引</span>
+            </div>
+            <div class="table-wrap">
+              <table id="sourcesTable">
+                <thead>
+                  <tr>
+                    <th>名称</th><th>路径</th><th>启用</th><th>递归</th><th>权重</th><th>文件类型</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="result" class="section">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">最后操作结果</div>
+          </div>
+          <div class="panel-body">
+            <pre id="resultBox" class="code-block">{}</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="search" class="section">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;opacity:.7"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              检索测试
+            </div>
+            <div class="search-meta" id="searchMeta"></div>
+          </div>
+          <div class="panel-body">
+            <div class="search-bar">
+              <input id="searchQuery" class="search-input" type="text"
+                placeholder="输入查询语句，按 Enter 或点击搜索…"
+                autocomplete="off" onkeydown="if(event.key==='Enter')runSearch()" />
+              <button class="btn btn-primary" onclick="runSearch()" id="searchBtn">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                搜索
+              </button>
+            </div>
+            <div class="search-controls">
+              <label class="field-label" style="margin:0">返回数量</label>
+              <select id="searchTopK" class="select select-sm">
+                <option value="3">Top 3</option>
+                <option value="5" selected>Top 5</option>
+                <option value="10">Top 10</option>
+                <option value="20">Top 20</option>
+              </select>
+              <label class="toggle-label" style="margin-left:4px">
+                <input id="searchDebug" type="checkbox" />
+                <span>Debug 模式</span>
+              </label>
+            </div>
+            <div id="searchResults" class="search-results"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="config" class="section">
+        <div class="config-panels">
+
+          <!-- 快速配置 -->
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;opacity:.7"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                快速配置修改
+              </div>
+              <div class="panel-controls">
+                <button class="btn btn-ghost btn-sm" onclick="loadConfigEditor()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+                  读取配置
+                </button>
+                <button class="btn btn-primary btn-sm" onclick="saveQuickConfig()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                  保存并重载
+                </button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="form-grid">
+                <div class="field-group">
+                  <label class="field-label" for="embeddingModelInput">Embedding Model</label>
+                  <input id="embeddingModelInput" class="input" type="text" placeholder="如: BAAI/bge-m3" autocomplete="off" />
+                </div>
+                <div class="field-group">
+                  <label class="field-label" for="rerankerModelInput">Reranker Model</label>
+                  <input id="rerankerModelInput" class="input" type="text" placeholder="如: BAAI/bge-reranker-v2-m3" autocomplete="off" />
+                </div>
+              </div>
+              <div class="field-group" style="margin-top:18px">
+                <label class="field-label">知识源路径</label>
+                <div class="table-wrap">
+                  <table id="sourcePathTable">
+                    <thead>
+                      <tr><th>知识源名称</th><th>路径（可直接编辑）</th></tr>
+                    </thead>
+                    <tbody></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 原文编辑器 -->
+          <div class="panel">
+            <div class="panel-header">
+              <div class="panel-header-left">
+                <div class="panel-title">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;opacity:.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  config.yaml 原文编辑
+                </div>
+                <div id="configFileHint" class="config-file-badge"></div>
+              </div>
+              <div class="panel-controls">
+                <button class="btn btn-ghost btn-sm" onclick="loadConfigEditor()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
+                  刷新原文
+                </button>
+                <button class="btn btn-warn btn-sm" onclick="saveRawConfig()">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  保存原文并重载
+                </button>
+              </div>
+            </div>
+            <div class="panel-body">
+              <textarea id="configRawEditor" class="code-editor" spellcheck="false" placeholder="# config.yaml 内容将在读取配置后显示..."></textarea>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <section id="logs" class="section">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">服务日志</div>
+            <div class="panel-controls">
+              <select id="logLevel" class="select select-sm">
+                <option value="DEBUG">DEBUG</option>
+                <option value="INFO" selected>INFO</option>
+                <option value="WARNING">WARNING</option>
+                <option value="ERROR">ERROR</option>
+                <option value="CRITICAL">CRITICAL</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" onclick="refreshLogs(true)">刷新日志</button>
+              <label class="toggle-label">
+                <input id="autoScrollLogs" type="checkbox" checked />
+                <span>自动滚动</span>
+              </label>
+            </div>
+          </div>
+          <div class="panel-body">
+            <pre id="logBox" class="code-block log-box"></pre>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <div id="shutdownModal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="shutdownModalTitle">
+      <div class="modal-header">
+        <div>
+          <div id="shutdownModalTitle" class="modal-title">关闭 RAG 服务</div>
+          <div class="modal-sub">系统会先停止文件监听，并等待正在运行的索引任务结束。</div>
+        </div>
+        <button class="icon-btn" aria-label="关闭弹窗" onclick="closeShutdownDialog()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="shutdown-options">
+          <label class="toggle-label">
+            <input id="shutdownWait" type="checkbox" checked />
+            <span>等待索引任务完成</span>
+          </label>
+          <label class="field-group shutdown-timeout">
+            <span class="field-label">等待超时（秒）</span>
+            <input id="shutdownTimeout" class="input" type="number" min="0" max="3600" value="300" />
+          </label>
+          <label class="toggle-label danger-toggle">
+            <input id="shutdownForce" type="checkbox" />
+            <span>强制关闭</span>
+          </label>
+        </div>
+        <div class="shutdown-note" id="shutdownStateNote"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeShutdownDialog()">取消</button>
+        <button class="btn btn-danger" id="confirmShutdownBtn" onclick="shutdownService()">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          确认关闭
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script src="{{ url_for('static', path='dashboard.js') }}"></script>
+</body>
+</html>

@@ -36,21 +36,29 @@ def setup_logger(name: str = "rag") -> logging.Logger:
     except Exception:
         log_dir = Path(__file__).parent / "logs"
 
-    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        log_dir = Path(__file__).parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
 
-    file_handler = logging.handlers.TimedRotatingFileHandler(
-        filename=str(log_dir / "rag.log"),
-        when="midnight",
-        interval=1,
-        backupCount=30,  # Keep 30 days
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_format = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    file_handler.setFormatter(file_format)
-    logger.addHandler(file_handler)
+    try:
+        file_handler = logging.handlers.TimedRotatingFileHandler(
+            filename=str(log_dir / "rag.log"),
+            when="midnight",
+            interval=1,
+            backupCount=30,  # Keep 30 days
+            encoding="utf-8",
+        )
+    except Exception:
+        file_handler = None
+    if file_handler:
+        file_handler.setLevel(logging.DEBUG)
+        file_format = logging.Formatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        file_handler.setFormatter(file_format)
+        logger.addHandler(file_handler)
 
     return logger
