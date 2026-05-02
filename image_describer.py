@@ -4,6 +4,8 @@ All configurations are loaded from config.yaml via config.py.
 No hardcoded paths or API keys should exist here.
 """
 import base64
+import os
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from dataclasses import dataclass
@@ -13,6 +15,20 @@ from logger import setup_logger
 from config import get_config
 
 log = setup_logger("rag")
+
+
+@contextmanager
+def _suppress_mupdf_stderr():
+    """Hide non-fatal MuPDF diagnostics printed directly to stderr."""
+    stderr_fd = 2
+    saved_fd = os.dup(stderr_fd)
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), stderr_fd)
+            yield
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(saved_fd)
 
 @dataclass
 class ImageDescription:
@@ -27,22 +43,23 @@ def render_pdf_pages(pdf_path: str, output_dir: str,
     """Render PDF pages as PNG images using PyMuPDF."""
     import fitz
 
-    doc = fitz.open(pdf_path)
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    with _suppress_mupdf_stderr():
+        doc = fitz.open(pdf_path)
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
 
-    image_paths = []
-    for page_num in range(min(len(doc), max_pages)):
-        page = doc[page_num]
-        zoom = dpi / 72
-        mat = fitz.Matrix(zoom, zoom)
-        pix = page.get_pixmap(matrix=mat)
+        image_paths = []
+        for page_num in range(min(len(doc), max_pages)):
+            page = doc[page_num]
+            zoom = dpi / 72
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB, alpha=False, annots=False)
 
-        image_path = str(out / f"page_{page_num + 1}.png")
-        pix.save(image_path)
-        image_paths.append(image_path)
+            image_path = str(out / f"page_{page_num + 1}.png")
+            pix.save(image_path)
+            image_paths.append(image_path)
 
-    doc.close()
+        doc.close()
     return image_paths
 
 

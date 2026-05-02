@@ -11,6 +11,8 @@ content intact; only the annotation parsing is skipped.
 """
 import hashlib
 import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -19,6 +21,20 @@ from logger import setup_logger
 log = setup_logger("rag")
 
 SUPPORTED_EXTS = {".md", ".pdf", ".docx", ".doc", ".html", ".htm", ".txt", ".py", ".ipynb"}
+
+
+@contextmanager
+def _suppress_mupdf_stderr():
+    """Hide non-fatal MuPDF diagnostics printed directly to stderr."""
+    stderr_fd = 2
+    saved_fd = os.dup(stderr_fd)
+    try:
+        with open(os.devnull, "w") as devnull:
+            os.dup2(devnull.fileno(), stderr_fd)
+            yield
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(saved_fd)
 
 
 class ParsedDoc:
@@ -120,13 +136,14 @@ def _extract_text(p: Path, suffix: str) -> Optional[str]:
 def _extract_pdf(p: Path) -> Optional[str]:
     try:
         import fitz
-        doc = fitz.open(str(p))
-        pages = []
-        for page_num, page in enumerate(doc):
-            page_text = page.get_text()
-            if page_text.strip():
-                pages.append(f"[Page {page_num + 1}]\n{page_text}")
-        doc.close()
+        with _suppress_mupdf_stderr():
+            doc = fitz.open(str(p))
+            pages = []
+            for page_num, page in enumerate(doc):
+                page_text = page.get_text()
+                if page_text.strip():
+                    pages.append(f"[Page {page_num + 1}]\n{page_text}")
+            doc.close()
         return "\n\n".join(pages) if pages else None
     except ImportError:
         print(f"PyMuPDF not installed, cannot parse PDF: {p}")
