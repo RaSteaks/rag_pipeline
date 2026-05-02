@@ -8,6 +8,17 @@ function fmtNum(v) {
   return Number.isFinite(v) ? v.toLocaleString() : "—";
 }
 
+function fmtDuration(seconds) {
+  if (!Number.isFinite(seconds)) return "—";
+
+  const totalMinutes = Math.max(0, Math.floor(seconds / 60));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  return `${days} Day ${hours} hour ${minutes} min`;
+}
+
 function toast(msg, type = "info", duration = 3000) {
   const c = document.getElementById("toastContainer");
   const t = document.createElement("div");
@@ -62,7 +73,7 @@ function updateSourceTable(sources) {
 function updateCards(status) {
   document.getElementById("cards").innerHTML =
     card("API 状态",     status.api.status,                        statusClass(status.api.status)) +
-    card("运行时长 (s)", fmtNum(status.api.uptime_seconds)) +
+    card("运行时长",     fmtDuration(status.api.uptime_seconds)) +
     card("Embedding",    status.embedding.status,                  statusClass(status.embedding.status)) +
     card("Reranker",     status.reranker.status,                   statusClass(status.reranker.status)) +
     card("Chroma Chunks",fmtNum(status.indexes.chroma_chunks)) +
