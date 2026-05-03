@@ -33,3 +33,5 @@ install_services.bat
 .DS_Store
 Thumbs.db
 start-rag-api.ps1
+
+.vscode/

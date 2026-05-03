@@ -334,14 +334,41 @@ async function reloadConfig() {
   }
 }
 
+function getServiceAction() {
+  return document.querySelector('input[name="serviceAction"]:checked')?.value || "shutdown";
+}
+
+function updateServiceActionUi() {
+  const action = getServiceAction();
+  const isRestart = action === "restart";
+  const title = document.getElementById("shutdownModalTitle");
+  const sub = document.getElementById("shutdownModalSub");
+  const btn = document.getElementById("confirmShutdownBtn");
+  const btnText = document.getElementById("confirmShutdownText");
+
+  if (title) title.textContent = isRestart ? "重启 RAG 服务" : "关闭 RAG 服务";
+  if (sub) {
+    sub.textContent = isRestart
+      ? "系统会等待索引任务结束，然后在当前进程内重新启动服务。"
+      : "系统会先停止文件监听，并等待正在运行的索引任务结束。";
+  }
+  if (btn) {
+    btn.className = isRestart ? "btn btn-warn" : "btn btn-danger";
+  }
+  if (btnText) btnText.textContent = isRestart ? "确认重启" : "确认关闭";
+}
+
 function openShutdownDialog() {
   const modal = document.getElementById("shutdownModal");
   modal.hidden = false;
+  const shutdownAction = document.querySelector('input[name="serviceAction"][value="shutdown"]');
+  if (shutdownAction) shutdownAction.checked = true;
   document.getElementById("shutdownForce").checked = false;
   document.getElementById("shutdownWait").checked = true;
   document.getElementById("shutdownTimeout").value = "300";
   document.getElementById("confirmShutdownBtn").disabled = false;
   document.getElementById("shutdownStateNote").textContent = "正在读取当前索引状态…";
+  updateServiceActionUi();
   refreshShutdownState();
 }
 
@@ -369,37 +396,41 @@ async function refreshShutdownState() {
   }
 }
 
-async function shutdownService() {
+async function submitServicePowerAction() {
+  const action = getServiceAction();
+  const isRestart = action === "restart";
   const btn = document.getElementById("confirmShutdownBtn");
   const wait_for_indexing = document.getElementById("shutdownWait").checked;
   const force = document.getElementById("shutdownForce").checked;
   const timeout_seconds = Math.max(0, Math.min(3600, parseInt(document.getElementById("shutdownTimeout").value, 10) || 0));
+  const endpoint = isRestart ? "/restart" : "/shutdown";
+  const actionLabel = isRestart ? "重启" : "关闭";
 
   btn.disabled = true;
-  toast("正在提交关闭请求…", "info", 2500);
-  updateResultBox({ status: "running", action: "shutdown", wait_for_indexing, timeout_seconds, force });
+  toast(`正在提交${actionLabel}请求…`, "info", 2500);
+  updateResultBox({ status: "running", action, wait_for_indexing, timeout_seconds, force });
 
   try {
-    const res = await callApi("/shutdown", "POST", {
+    const res = await callApi(endpoint, "POST", {
       wait_for_indexing,
       timeout_seconds,
       force,
-      reason: "dashboard",
+      reason: `dashboard-${action}`,
     });
     updateResultBox(res);
     document.getElementById("shutdownStateNote").textContent = JSON.stringify(res.indexing || {}, null, 2);
 
-    if (res.status === "shutting_down") {
-      toast("服务正在关闭", "success", 4000);
+    if (res.status === "shutting_down" || res.status === "restarting") {
+      toast(isRestart ? "服务正在重启" : "服务正在关闭", "success", 4000);
       setTimeout(refreshStatus, 1200);
       return;
     }
 
-    toast(res.message || "关闭请求未执行", "error", 4500);
+    toast(res.message || `${actionLabel}请求未执行`, "error", 4500);
     btn.disabled = false;
   } catch (e) {
-    toast("关闭请求失败: " + String(e), "error", 4500);
-    updateResultBox({ error: String(e), action: "shutdown" });
+    toast(`${actionLabel}请求失败: ` + String(e), "error", 4500);
+    updateResultBox({ error: String(e), action });
     btn.disabled = false;
   }
 }
@@ -541,7 +572,10 @@ document.getElementById("saveRawConfigBtn")?.addEventListener("click", saveRawCo
 document.getElementById("refreshLogsBtn")?.addEventListener("click", () => refreshLogs(true));
 document.getElementById("closeShutdownBtn")?.addEventListener("click", closeShutdownDialog);
 document.getElementById("cancelShutdownBtn")?.addEventListener("click", closeShutdownDialog);
-document.getElementById("confirmShutdownBtn")?.addEventListener("click", shutdownService);
+document.getElementById("confirmShutdownBtn")?.addEventListener("click", submitServicePowerAction);
+document.querySelectorAll('input[name="serviceAction"]').forEach((input) => {
+  input.addEventListener("change", updateServiceActionUi);
+});
 document.getElementById("searchBtn")?.addEventListener("click", runSearch);
 document.getElementById("searchQuery")?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") runSearch();

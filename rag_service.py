@@ -228,6 +228,15 @@ def _signal_process_shutdown(delay_seconds: float = 0.5):
     threading.Thread(target=_job, name="shutdown-signal", daemon=True).start()
 
 
+def _signal_process_restart(delay_seconds: float = 0.5):
+    def _job():
+        time.sleep(delay_seconds)
+        log.info("Restarting RAG Pipeline process")
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+
+    threading.Thread(target=_job, name="restart-signal", daemon=True).start()
+
+
 def _cancel_shutdown_request():
     global shutdown_requested, shutdown_started_at, shutdown_reason
     shutdown_requested = False
@@ -346,9 +355,9 @@ async def add_security_headers(request: Request, call_next):
         "default-src 'self'; "
         "script-src 'self'; "
         "style-src 'self' https://fonts.googleapis.com; "
-        "font-src https://fonts.gstatic.com; "
+        "font-src 'self' https://fonts.gstatic.com; "
         "img-src 'self' data:; "
-        "connect-src 'self' https://fonts.googleapis.com https://fonts.gstatic.com; "
+        "connect-src 'self'; "
         "object-src 'none'; "
         "base-uri 'self'; "
         "frame-ancestors 'none'; "
@@ -597,6 +606,47 @@ def shutdown_system(req: Optional[ShutdownRequest] = None):
     _signal_process_shutdown()
     return {
         "status": "shutting_down",
+        "reason": payload.reason,
+        "force": payload.force,
+        "indexing": state,
+    }
+
+
+@app.post("/restart")
+def restart_system(req: Optional[ShutdownRequest] = None):
+    global shutdown_requested, shutdown_started_at, shutdown_reason
+
+    payload = req or ShutdownRequest(reason="restart")
+    shutdown_requested = True
+    shutdown_started_at = time.time()
+    shutdown_reason = payload.reason
+
+    if indexer:
+        indexer.stop_file_watcher()
+
+    state = _indexing_state()
+    if state["busy"] and payload.wait_for_indexing and not payload.force:
+        ok, state = _wait_for_indexing_idle(payload.timeout_seconds)
+        if not ok:
+            _cancel_shutdown_request()
+            return {
+                "status": "busy",
+                "message": "Indexing is still running; restart was not started",
+                "indexing": state,
+            }
+
+    if state["busy"] and not payload.force:
+        _cancel_shutdown_request()
+        return {
+            "status": "busy",
+            "message": "Indexing is running; set wait_for_indexing=true or force=true",
+            "indexing": state,
+        }
+
+    log.info(f"Restart requested: reason={payload.reason}, force={payload.force}")
+    _signal_process_restart()
+    return {
+        "status": "restarting",
         "reason": payload.reason,
         "force": payload.force,
         "indexing": state,

@@ -269,14 +269,24 @@
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="shutdownModalTitle">
       <div class="modal-header">
         <div>
-          <div id="shutdownModalTitle" class="modal-title">关闭 RAG 服务</div>
-          <div class="modal-sub">系统会先停止文件监听，并等待正在运行的索引任务结束。</div>
+          <div id="shutdownModalTitle" class="modal-title">服务电源操作</div>
+          <div class="modal-sub" id="shutdownModalSub">系统会先停止文件监听，并等待正在运行的索引任务结束。</div>
         </div>
         <button class="icon-btn" aria-label="关闭弹窗" id="closeShutdownBtn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
       <div class="modal-body">
+        <div class="shutdown-action-tabs" role="radiogroup" aria-label="服务操作">
+          <label class="shutdown-action-option">
+            <input type="radio" name="serviceAction" value="shutdown" checked />
+            <span>关闭服务</span>
+          </label>
+          <label class="shutdown-action-option">
+            <input type="radio" name="serviceAction" value="restart" />
+            <span>重启服务</span>
+          </label>
+        </div>
         <div class="shutdown-options">
           <label class="toggle-label">
             <input id="shutdownWait" type="checkbox" checked />
@@ -297,7 +307,7 @@
         <button class="btn btn-ghost" id="cancelShutdownBtn">取消</button>
         <button class="btn btn-danger" id="confirmShutdownBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
-          确认关闭
+          <span id="confirmShutdownText">确认关闭</span>
         </button>
       </div>
     </div>
