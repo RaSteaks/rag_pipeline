@@ -30,12 +30,21 @@ function toast(msg, type = "info", duration = 3000) {
 
 function card(title, value, cls = "") {
   const hasIndicator = ["ok", "off", "muted"].includes(cls);
-  return `
-    <div class="card ${cls}">
-      ${hasIndicator ? `<div class="card-indicator ${cls}"></div>` : ""}
-      <div class="card-label">${title}</div>
-      <div class="card-value ${cls}">${value}</div>
-    </div>`;
+  const root = document.createElement("div");
+  root.className = ["card", cls].filter(Boolean).join(" ");
+  if (hasIndicator) {
+    const indicator = document.createElement("div");
+    indicator.className = `card-indicator ${cls}`;
+    root.appendChild(indicator);
+  }
+  const label = document.createElement("div");
+  label.className = "card-label";
+  label.textContent = title;
+  const valueEl = document.createElement("div");
+  valueEl.className = ["card-value", cls].filter(Boolean).join(" ");
+  valueEl.textContent = value;
+  root.append(label, valueEl);
+  return root;
 }
 
 async function callApi(path, method = "GET", body = null) {
@@ -47,40 +56,57 @@ async function callApi(path, method = "GET", body = null) {
 
 function updateSourceTable(sources) {
   const tbody = document.querySelector("#sourcesTable tbody");
-  tbody.innerHTML = "";
+  tbody.replaceChildren();
   for (const s of sources) {
     const tr = document.createElement("tr");
-    const types = (s.file_types || [])
-      .map(t => `<code style="background:var(--surface-2);padding:1px 6px;border-radius:4px;font-size:11px;font-family:monospace">${t}</code>`)
-      .join(" ");
-    const yes = `<span style="color:var(--green);font-weight:600">✓</span>`;
-    const no  = `<span style="color:var(--text-dim)">—</span>`;
-    tr.innerHTML = `
-      <td style="font-weight:500;color:var(--text)">${s.name}</td>
-      <td style="font-family:monospace;font-size:12px">${s.path}</td>
-      <td>${s.enabled ? yes : no}</td>
-      <td>${s.recursive ? yes : no}</td>
-      <td>${s.weight}</td>
-      <td>${types}</td>`;
+    const name = document.createElement("td");
+    name.className = "td-strong";
+    name.textContent = s.name || "";
+    const path = document.createElement("td");
+    path.className = "td-mono";
+    path.textContent = s.path || "";
+    const enabled = document.createElement("td");
+    enabled.appendChild(statusMark(Boolean(s.enabled)));
+    const recursive = document.createElement("td");
+    recursive.appendChild(statusMark(Boolean(s.recursive)));
+    const weight = document.createElement("td");
+    weight.textContent = String(s.weight ?? "");
+    const types = document.createElement("td");
+    for (const type of s.file_types || []) {
+      const code = document.createElement("code");
+      code.className = "source-type-token";
+      code.textContent = type;
+      types.appendChild(code);
+      types.append(" ");
+    }
+    tr.append(name, path, enabled, recursive, weight, types);
     tbody.appendChild(tr);
   }
 
   const select = document.getElementById("sourceName");
   const enabled = sources.filter((s) => s.enabled);
-  select.innerHTML = enabled.map((s) => `<option value="${s.name}">${s.name}</option>`).join("");
+  select.replaceChildren(...enabled.map((s) => new Option(s.name || "", s.name || "")));
+}
+
+function statusMark(ok) {
+  const span = document.createElement("span");
+  span.className = ok ? "status-yes" : "status-no";
+  span.textContent = ok ? "✓" : "—";
+  return span;
 }
 
 function updateCards(status) {
-  document.getElementById("cards").innerHTML =
-    card("API 状态",     status.api.status,                        statusClass(status.api.status)) +
-    card("运行时长",     fmtDuration(status.api.uptime_seconds)) +
-    card("Embedding",    status.embedding.status,                  statusClass(status.embedding.status)) +
-    card("Reranker",     status.reranker.status,                   statusClass(status.reranker.status)) +
-    card("Chroma Chunks",fmtNum(status.indexes.chroma_chunks)) +
-    card("已索引文件",   fmtNum(status.indexes.indexed_files)) +
-    card("BM25",  status.indexes.bm25_ready ? "ready" : "未就绪", status.indexes.bm25_ready ? "ok" : "off") +
-    card("文件监听",     status.watcher.running ? "running" : "stopped", status.watcher.running ? "ok" : "off") +
-    card("关闭请求",     status.shutdown?.requested ? "pending" : "idle", status.shutdown?.requested ? "muted" : "");
+  document.getElementById("cards").replaceChildren(
+    card("API 状态",     status.api.status,                        statusClass(status.api.status)),
+    card("运行时长",     fmtDuration(status.api.uptime_seconds)),
+    card("Embedding",    status.embedding.status,                  statusClass(status.embedding.status)),
+    card("Reranker",     status.reranker.status,                   statusClass(status.reranker.status)),
+    card("Chroma Chunks",fmtNum(status.indexes.chroma_chunks)),
+    card("已索引文件",   fmtNum(status.indexes.indexed_files)),
+    card("BM25",  status.indexes.bm25_ready ? "ready" : "未就绪", status.indexes.bm25_ready ? "ok" : "off"),
+    card("文件监听",     status.watcher.running ? "running" : "stopped", status.watcher.running ? "ok" : "off"),
+    card("关闭请求",     status.shutdown?.requested ? "pending" : "idle", status.shutdown?.requested ? "muted" : "")
+  );
 
   const dot = document.getElementById("globalStatus");
   const txt = document.getElementById("globalStatusText");
@@ -100,13 +126,19 @@ function updateResultBox(data) {
 function updateConfigSourcePathTable(sources) {
   const tbody = document.querySelector("#sourcePathTable tbody");
   if (!tbody) return;
-  tbody.innerHTML = "";
+  tbody.replaceChildren();
   for (const s of sources || []) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td style="font-weight:500;color:var(--text)">${s.name || ""}</td>
-      <td><input class="source-path-input" data-source-name="${s.name || ""}" value="${(s.path || "").replace(/"/g, "&quot;")}" /></td>
-    `;
+    const name = document.createElement("td");
+    name.className = "td-strong";
+    name.textContent = s.name || "";
+    const pathCell = document.createElement("td");
+    const input = document.createElement("input");
+    input.className = "source-path-input";
+    input.dataset.sourceName = s.name || "";
+    input.value = s.path || "";
+    pathCell.appendChild(input);
+    tr.append(name, pathCell);
     tbody.appendChild(tr);
   }
 }
@@ -118,24 +150,38 @@ function collectSourcePathUpdates() {
   }));
 }
 
-const LOG_COLORS = {
-  DEBUG:    "#475569",
-  INFO:     "#60a5fa",
-  WARNING:  "#fbbf24",
-  ERROR:    "#f87171",
-  CRITICAL: "#fb7185",
+const LOG_LEVEL_CLASSES = {
+  DEBUG: "log-level-debug",
+  INFO: "log-level-info",
+  WARNING: "log-level-warning",
+  ERROR: "log-level-error",
+  CRITICAL: "log-level-critical",
 };
 
 function formatLogLine(entry) {
   const t = new Date(entry.ts * 1000).toLocaleTimeString();
   const lvl = entry.level.toUpperCase();
-  const color = LOG_COLORS[lvl] || "#94a3b8";
-  return `<span style="color:#3d4f6a">[${entry.id}] ${t} </span><span style="color:${color};font-weight:600">${lvl.padEnd(8, " ")}</span><span style="color:#334155"> ${entry.logger} | </span>${entry.message}`;
+  const frag = document.createDocumentFragment();
+  const prefix = document.createElement("span");
+  prefix.className = "log-id-time";
+  prefix.textContent = `[${entry.id}] ${t} `;
+  const level = document.createElement("span");
+  level.className = `log-level ${LOG_LEVEL_CLASSES[lvl] || ""}`;
+  level.textContent = lvl.padEnd(8, " ");
+  const logger = document.createElement("span");
+  logger.className = "log-prefix";
+  logger.textContent = ` ${entry.logger} | `;
+  frag.append(prefix, level, logger, document.createTextNode(entry.message || ""));
+  return frag;
 }
 
 function updateLogBox(items) {
   const box = document.getElementById("logBox");
-  box.innerHTML = items.map(formatLogLine).join("\n");
+  box.replaceChildren();
+  items.forEach((entry, index) => {
+    if (index > 0) box.append("\n");
+    box.appendChild(formatLogLine(entry));
+  });
   if (document.getElementById("autoScrollLogs")?.checked) {
     box.scrollTop = box.scrollHeight;
   }
@@ -363,18 +409,14 @@ function renderResults(data) {
   const meta = document.getElementById("searchMeta");
 
   if (!data.results || data.results.length === 0) {
-    box.innerHTML = `
-      <div class="search-empty">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        未找到相关结果
-      </div>`;
+    renderSearchEmpty("未找到相关结果", "32");
     meta.textContent = "";
     return;
   }
 
   meta.textContent = `共 ${data.count} 条结果`;
-
-  box.innerHTML = data.results.map((r, i) => {
+  box.replaceChildren();
+  data.results.forEach((r, i) => {
     const reranked = r.rerank_score != null;
     const scoreVal = reranked ? r.rerank_score : (r.score ?? 0);
     const scoreStr = typeof scoreVal === "number" ? scoreVal.toFixed(4) : "—";
@@ -383,22 +425,73 @@ function renderResults(data) {
     const filePath = r.meta?.source || r.source_file || "";
     const sourceName = r.source_name || r.meta?.source_name || "";
 
-    const debugHtml = data.query && r.meta ? `
-      <div class="result-debug">${JSON.stringify(r.meta, null, 2)}</div>` : "";
+    const item = document.createElement("div");
+    item.className = "result-item";
+    const header = document.createElement("div");
+    header.className = "result-header";
+    const rank = document.createElement("div");
+    rank.className = "result-rank";
+    rank.textContent = String(i + 1);
+    header.append(
+      rank,
+      resultChip(srcLabel, srcLabel),
+      resultChip("score", `score: ${scoreStr}`),
+    );
+    if (sourceName) header.appendChild(resultChip("score", sourceName));
+    if (filePath) {
+      const path = document.createElement("div");
+      path.className = "result-path";
+      path.title = filePath;
+      path.textContent = filePath;
+      header.appendChild(path);
+    }
+    const text = document.createElement("div");
+    text.className = "result-text";
+    text.textContent = r.text || "";
+    item.append(header, text);
+    if (data.query && r.meta) {
+      const debug = document.createElement("div");
+      debug.className = "result-debug";
+      debug.textContent = JSON.stringify(r.meta, null, 2);
+      item.appendChild(debug);
+    }
+    box.appendChild(item);
+  });
+}
 
-    return `
-      <div class="result-item">
-        <div class="result-header">
-          <div class="result-rank">${i + 1}</div>
-          <span class="result-chip ${srcLabel}">${srcLabel}</span>
-          <span class="result-chip score">score: ${scoreStr}</span>
-          ${sourceName ? `<span class="result-chip score">${sourceName}</span>` : ""}
-          ${filePath ? `<div class="result-path" title="${filePath}">${filePath}</div>` : ""}
-        </div>
-        <div class="result-text">${r.text || ""}</div>
-        ${debugHtml}
-      </div>`;
-  }).join("");
+function resultChip(cls, text) {
+  const chip = document.createElement("span");
+  const safeClass = String(cls).replace(/[^a-z0-9_-]/gi, "");
+  chip.className = ["result-chip", safeClass].filter(Boolean).join(" ");
+  chip.textContent = text;
+  return chip;
+}
+
+function renderSearchEmpty(message, iconSize = "24") {
+  const box = document.getElementById("searchResults");
+  const empty = document.createElement("div");
+  empty.className = "search-empty";
+  const svgNs = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNs, "svg");
+  svg.setAttribute("width", iconSize);
+  svg.setAttribute("height", iconSize);
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  const circle = document.createElementNS(svgNs, "circle");
+  circle.setAttribute("cx", "11");
+  circle.setAttribute("cy", "11");
+  circle.setAttribute("r", "8");
+  const line = document.createElementNS(svgNs, "line");
+  line.setAttribute("x1", "21");
+  line.setAttribute("y1", "21");
+  line.setAttribute("x2", "16.65");
+  line.setAttribute("y2", "16.65");
+  svg.append(circle, line);
+  empty.appendChild(svg);
+  empty.append(document.createTextNode(message));
+  box.replaceChildren(empty);
 }
 
 async function runSearch() {
@@ -413,20 +506,20 @@ async function runSearch() {
 
   btn.disabled = true;
   meta.textContent = "搜索中…";
-  box.innerHTML = `<div class="search-empty"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>正在检索…</div>`;
+  renderSearchEmpty("正在检索…");
 
   try {
     const data = await callApi("/search", "POST", { query, top_k, debug });
     if (data.error) {
       toast("搜索失败: " + data.error, "error");
-      box.innerHTML = `<div class="search-empty">搜索出错: ${data.error}</div>`;
+      renderSearchEmpty(`搜索出错: ${data.error}`);
       meta.textContent = "";
     } else {
       renderResults(data);
     }
   } catch (e) {
     toast("搜索请求失败: " + String(e), "error");
-    box.innerHTML = `<div class="search-empty">请求失败: ${String(e)}</div>`;
+    renderSearchEmpty(`请求失败: ${String(e)}`);
     meta.textContent = "";
   } finally {
     btn.disabled = false;
@@ -434,6 +527,26 @@ async function runSearch() {
 }
 
 // Init
+document.getElementById("refreshStatusBtn")?.addEventListener("click", refreshStatus);
+document.getElementById("syncIncrementalBtn")?.addEventListener("click", () => runSync(false));
+document.getElementById("syncRebuildBtn")?.addEventListener("click", () => runSync(true));
+document.getElementById("reloadConfigBtn")?.addEventListener("click", reloadConfig);
+document.getElementById("openShutdownBtn")?.addEventListener("click", openShutdownDialog);
+document.getElementById("rebuildSourceBtn")?.addEventListener("click", rebuildSource);
+document.querySelectorAll(".loadConfigBtn").forEach((btn) => {
+  btn.addEventListener("click", loadConfigEditor);
+});
+document.getElementById("saveQuickConfigBtn")?.addEventListener("click", saveQuickConfig);
+document.getElementById("saveRawConfigBtn")?.addEventListener("click", saveRawConfig);
+document.getElementById("refreshLogsBtn")?.addEventListener("click", () => refreshLogs(true));
+document.getElementById("closeShutdownBtn")?.addEventListener("click", closeShutdownDialog);
+document.getElementById("cancelShutdownBtn")?.addEventListener("click", closeShutdownDialog);
+document.getElementById("confirmShutdownBtn")?.addEventListener("click", shutdownService);
+document.getElementById("searchBtn")?.addEventListener("click", runSearch);
+document.getElementById("searchQuery")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") runSearch();
+});
+
 refreshStatus();
 refreshLogs();
 loadConfigEditor();

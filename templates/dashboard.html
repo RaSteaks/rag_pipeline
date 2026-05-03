@@ -58,23 +58,23 @@
         <p class="topbar-sub">Embedding · Reranker · 索引 · 向量库</p>
       </div>
       <div class="topbar-actions">
-        <button class="btn btn-ghost" onclick="refreshStatus()">
+        <button class="btn btn-ghost" id="refreshStatusBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
           刷新
         </button>
-        <button class="btn btn-primary" onclick="runSync(false)">
+        <button class="btn btn-primary" id="syncIncrementalBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           增量同步
         </button>
-        <button class="btn btn-warn" onclick="runSync(true)">
+        <button class="btn btn-warn" id="syncRebuildBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
           全量重建
         </button>
-        <button class="btn btn-ghost" onclick="reloadConfig()">
+        <button class="btn btn-ghost" id="reloadConfigBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
           重载配置
         </button>
-        <button class="btn btn-danger" onclick="openShutdownDialog()">
+        <button class="btn btn-danger" id="openShutdownBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
           关闭服务
         </button>
@@ -97,7 +97,7 @@
             <div class="inline-form">
               <span class="form-label">按知识源重建</span>
               <select id="sourceName" class="select"></select>
-              <button class="btn btn-primary btn-sm" onclick="rebuildSource()">执行重建</button>
+              <button class="btn btn-primary btn-sm" id="rebuildSourceBtn">执行重建</button>
               <span class="hint-text">仅对所选知识源重建向量索引</span>
             </div>
             <div class="table-wrap">
@@ -129,7 +129,7 @@
         <div class="panel">
           <div class="panel-header">
             <div class="panel-title">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;opacity:.7"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <svg class="panel-title-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
               检索测试
             </div>
             <div class="search-meta" id="searchMeta"></div>
@@ -138,21 +138,21 @@
             <div class="search-bar">
               <input id="searchQuery" class="search-input" type="text"
                 placeholder="输入查询语句，按 Enter 或点击搜索…"
-                autocomplete="off" onkeydown="if(event.key==='Enter')runSearch()" />
-              <button class="btn btn-primary" onclick="runSearch()" id="searchBtn">
+                autocomplete="off" />
+              <button class="btn btn-primary" id="searchBtn">
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 搜索
               </button>
             </div>
             <div class="search-controls">
-              <label class="field-label" style="margin:0">返回数量</label>
+              <label class="field-label field-label-inline">返回数量</label>
               <select id="searchTopK" class="select select-sm">
                 <option value="3">Top 3</option>
                 <option value="5" selected>Top 5</option>
                 <option value="10">Top 10</option>
                 <option value="20">Top 20</option>
               </select>
-              <label class="toggle-label" style="margin-left:4px">
+              <label class="toggle-label toggle-label-offset">
                 <input id="searchDebug" type="checkbox" />
                 <span>Debug 模式</span>
               </label>
@@ -169,15 +169,15 @@
           <div class="panel">
             <div class="panel-header">
               <div class="panel-title">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;opacity:.7"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+                <svg class="panel-title-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
                 快速配置修改
               </div>
               <div class="panel-controls">
-                <button class="btn btn-ghost btn-sm" onclick="loadConfigEditor()">
+                <button class="btn btn-ghost btn-sm loadConfigBtn">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
                   读取配置
                 </button>
-                <button class="btn btn-primary btn-sm" onclick="saveQuickConfig()">
+                <button class="btn btn-primary btn-sm" id="saveQuickConfigBtn">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
                   保存并重载
                 </button>
@@ -194,7 +194,7 @@
                   <input id="rerankerModelInput" class="input" type="text" placeholder="如: BAAI/bge-reranker-v2-m3" autocomplete="off" />
                 </div>
               </div>
-              <div class="field-group" style="margin-top:18px">
+              <div class="field-group source-path-field">
                 <label class="field-label">知识源路径</label>
                 <div class="table-wrap">
                   <table id="sourcePathTable">
@@ -213,17 +213,17 @@
             <div class="panel-header">
               <div class="panel-header-left">
                 <div class="panel-title">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;opacity:.7"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  <svg class="panel-title-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                   config.yaml 原文编辑
                 </div>
                 <div id="configFileHint" class="config-file-badge"></div>
               </div>
               <div class="panel-controls">
-                <button class="btn btn-ghost btn-sm" onclick="loadConfigEditor()">
+                <button class="btn btn-ghost btn-sm loadConfigBtn">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M1 4v6h6"/><path d="M23 20v-6h-6"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
                   刷新原文
                 </button>
-                <button class="btn btn-warn btn-sm" onclick="saveRawConfig()">
+                <button class="btn btn-warn btn-sm" id="saveRawConfigBtn">
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                   保存原文并重载
                 </button>
@@ -249,7 +249,7 @@
                 <option value="ERROR">ERROR</option>
                 <option value="CRITICAL">CRITICAL</option>
               </select>
-              <button class="btn btn-ghost btn-sm" onclick="refreshLogs(true)">刷新日志</button>
+              <button class="btn btn-ghost btn-sm" id="refreshLogsBtn">刷新日志</button>
               <label class="toggle-label">
                 <input id="autoScrollLogs" type="checkbox" checked />
                 <span>自动滚动</span>
@@ -272,7 +272,7 @@
           <div id="shutdownModalTitle" class="modal-title">关闭 RAG 服务</div>
           <div class="modal-sub">系统会先停止文件监听，并等待正在运行的索引任务结束。</div>
         </div>
-        <button class="icon-btn" aria-label="关闭弹窗" onclick="closeShutdownDialog()">
+        <button class="icon-btn" aria-label="关闭弹窗" id="closeShutdownBtn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
@@ -294,8 +294,8 @@
         <div class="shutdown-note" id="shutdownStateNote"></div>
       </div>
       <div class="modal-actions">
-        <button class="btn btn-ghost" onclick="closeShutdownDialog()">取消</button>
-        <button class="btn btn-danger" id="confirmShutdownBtn" onclick="shutdownService()">
+        <button class="btn btn-ghost" id="cancelShutdownBtn">取消</button>
+        <button class="btn btn-danger" id="confirmShutdownBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
           确认关闭
         </button>

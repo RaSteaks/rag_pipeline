@@ -336,6 +336,12 @@ body {
   font-weight: 600;
 }
 
+.panel-title-icon {
+  vertical-align: -2px;
+  margin-right: 6px;
+  opacity: 0.7;
+}
+
 .panel-controls {
   display: flex;
   align-items: center;
@@ -638,6 +644,8 @@ tbody tr:hover td {
   gap: 7px;
 }
 
+.source-path-field { margin-top: 18px; }
+
 .field-label {
   font-size: 11px;
   font-weight: 600;
@@ -645,6 +653,43 @@ tbody tr:hover td {
   letter-spacing: 0.6px;
   color: var(--text-dim);
 }
+
+.field-label-inline { margin: 0; }
+.toggle-label-offset { margin-left: 4px; }
+
+.source-type-token {
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: monospace;
+}
+
+.td-strong {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.td-mono {
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.status-yes {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.status-no { color: var(--text-dim); }
+
+.log-id-time { color: #3d4f6a; }
+.log-level { font-weight: 600; }
+.log-level-debug { color: #475569; }
+.log-level-info { color: #60a5fa; }
+.log-level-warning { color: #fbbf24; }
+.log-level-error { color: #f87171; }
+.log-level-critical { color: #fb7185; }
+.log-prefix { color: #334155; }
 
 .panel-header-left {
   display: flex;
