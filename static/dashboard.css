@@ -33,6 +33,57 @@ body {
   font-size: 14px;
 }
 
+body.auth-pending .sidebar,
+body.auth-pending .main,
+body.auth-login .sidebar,
+body.auth-login .main {
+  visibility: hidden;
+}
+
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.login-screen[hidden] { display: none; }
+
+.login-panel {
+  width: min(360px, 100%);
+  display: grid;
+  gap: 14px;
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 24px 80px rgba(0,0,0,0.45);
+}
+
+.login-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.login-sub {
+  margin-top: -8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.login-error {
+  min-height: 18px;
+  color: #fca5a5;
+  font-size: 12px;
+}
+
+.login-error:empty { display: none; }
+
 /* ── Sidebar ──────────────────────────────── */
 .sidebar {
   width: var(--sidebar-w);
@@ -644,7 +695,15 @@ tbody tr:hover td {
   gap: 7px;
 }
 
-.source-path-field { margin-top: 18px; }
+.source-path-field,
+.auth-settings-field { margin-top: 18px; }
+
+.auth-settings-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) 1fr 1fr;
+  gap: 14px;
+  align-items: end;
+}
 
 .field-label {
   font-size: 11px;
@@ -894,6 +953,7 @@ tbody tr:hover td {
   .content { padding: 16px; }
   .cards-grid { grid-template-columns: repeat(2, 1fr); }
   .form-grid { grid-template-columns: 1fr; }
+  .auth-settings-grid { grid-template-columns: 1fr; }
   .panel-header-left { flex-wrap: wrap; gap: 6px; }
   .config-file-badge { max-width: 100%; }
   .modal-actions { flex-direction: column-reverse; }

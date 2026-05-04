@@ -1,7 +1,11 @@
 """RAG Pipeline API server + status dashboard."""
+import base64
+import hashlib
+import hmac
 import logging
 import os
 import signal
+import secrets
 import sys
 import threading
 import time
@@ -14,6 +18,7 @@ import requests
 import uvicorn
 import yaml
 from fastapi import FastAPI, Query, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -52,6 +57,8 @@ LOG_LOCK = threading.Lock()
 LOG_SEQ = 0
 CONFIG_PATH = BASE_DIR / "config.yaml"
 CONFIG_EXAMPLE_PATH = BASE_DIR / "config.example.yaml"
+AUTH_COOKIE_NAME = "rag_session"
+PASSWORD_HASH_ITERATIONS = 260000
 
 
 class InMemoryLogHandler(logging.Handler):
@@ -85,6 +92,86 @@ def _attach_in_memory_log_handler():
 
 
 _attach_in_memory_log_handler()
+
+
+def _b64(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _unb64(text: str) -> bytes:
+    padding = "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(text + padding)
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        password.encode("utf-8"),
+        salt,
+        PASSWORD_HASH_ITERATIONS,
+    )
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${_b64(salt)}${_b64(digest)}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        scheme, iterations, salt_b64, digest_b64 = stored_hash.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            _unb64(salt_b64),
+            int(iterations),
+        )
+        return hmac.compare_digest(_b64(digest), digest_b64)
+    except Exception:
+        return False
+
+
+def _auth_active() -> bool:
+    cfg = get_config()
+    return bool(cfg.auth.enabled and cfg.auth.username and cfg.auth.password_hash)
+
+
+def _auth_secret() -> str:
+    cfg = get_config()
+    return cfg.auth.session_secret or cfg.auth.password_hash or secrets.token_urlsafe(32)
+
+
+def _sign_session(username: str, expires_at: int) -> str:
+    payload = f"{username}:{expires_at}"
+    signature = hmac.new(
+        _auth_secret().encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{payload}:{signature}"
+
+
+def _session_username(request: Request) -> Optional[str]:
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        return None
+    try:
+        username, expires_at_text, signature = token.rsplit(":", 2)
+        expires_at = int(expires_at_text)
+    except ValueError:
+        return None
+    if expires_at < int(time.time()):
+        return None
+    expected = _sign_session(username, expires_at).rsplit(":", 1)[1]
+    if not hmac.compare_digest(signature, expected):
+        return None
+    cfg = get_config()
+    if username != cfg.auth.username:
+        return None
+    return username
+
+
+def _is_authenticated(request: Request) -> bool:
+    return not _auth_active() or _session_username(request) is not None
 
 
 def _probe_model_service(endpoint: str, timeout: int = 4) -> dict:
@@ -340,6 +427,17 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 
 
 @app.middleware("http")
+async def require_dashboard_auth(request: Request, call_next):
+    public_paths = {"/", "/health", "/auth/login", "/auth/logout", "/auth/me"}
+    path = request.url.path
+    if path in public_paths or path.startswith("/static/"):
+        return await call_next(request)
+    if not _is_authenticated(request):
+        return JSONResponse({"status": "unauthorized", "message": "Login required"}, status_code=401)
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -384,6 +482,11 @@ class ShutdownRequest(BaseModel):
     reason: Optional[str] = "update"
 
 
+class AuthLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class ConfigTextUpdateRequest(BaseModel):
     yaml_text: str
     create_if_missing: bool = True
@@ -398,6 +501,9 @@ class ConfigQuickUpdateRequest(BaseModel):
     embedding_model: Optional[str] = None
     reranker_model: Optional[str] = None
     knowledge_sources: list[KnowledgeSourcePathUpdate] = Field(default_factory=list)
+    auth_enabled: Optional[bool] = None
+    auth_username: Optional[str] = None
+    auth_password: Optional[str] = None
 
 
 def _read_config_text() -> tuple[str, Path, bool]:
@@ -435,6 +541,47 @@ async def dashboard(request: Request):
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request):
+    cfg = get_config()
+    username = _session_username(request) if _auth_active() else None
+    return {
+        "enabled": _auth_active(),
+        "configured": bool(cfg.auth.password_hash),
+        "authenticated": not _auth_active() or username is not None,
+        "username": username or (cfg.auth.username if not _auth_active() else None),
+    }
+
+
+@app.post("/auth/login")
+async def auth_login(req: AuthLoginRequest, request: Request):
+    cfg = get_config()
+    if not _auth_active():
+        return {"status": "ok", "enabled": False, "message": "Authentication is disabled"}
+    if req.username != cfg.auth.username or not verify_password(req.password, cfg.auth.password_hash):
+        return JSONResponse({"status": "error", "message": "Invalid username or password"}, status_code=401)
+
+    max_age = max(300, int(cfg.auth.session_max_age_seconds or 86400))
+    expires_at = int(time.time()) + max_age
+    response = JSONResponse({"status": "ok", "username": cfg.auth.username})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        _sign_session(cfg.auth.username, expires_at),
+        max_age=max_age,
+        httponly=True,
+        secure=request.url.scheme == "https",
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/auth/logout")
+async def auth_logout():
+    response = JSONResponse({"status": "ok"})
+    response.delete_cookie(AUTH_COOKIE_NAME)
+    return response
 
 
 @app.get("/status")
@@ -518,6 +665,23 @@ async def save_config_quick(req: ConfigQuickUpdateRequest):
     if req.reranker_model is not None:
         data.setdefault("reranker", {})
         data["reranker"]["model"] = req.reranker_model
+
+    if req.auth_enabled is not None or req.auth_username is not None or req.auth_password is not None:
+        auth = data.setdefault("auth", {})
+        if not isinstance(auth, dict):
+            return {"status": "error", "message": "auth must be a mapping"}
+        if req.auth_enabled is not None:
+            auth["enabled"] = req.auth_enabled
+        if req.auth_username is not None:
+            username = req.auth_username.strip()
+            if not username:
+                return {"status": "error", "message": "Auth username cannot be empty"}
+            auth["username"] = username
+        if req.auth_password:
+            auth["password_hash"] = hash_password(req.auth_password)
+            auth["session_secret"] = secrets.token_urlsafe(32)
+        if auth.get("enabled") and not auth.get("password_hash"):
+            return {"status": "error", "message": "Set a password before enabling authentication"}
 
     updated_sources = 0
     missing_sources: list[str] = []

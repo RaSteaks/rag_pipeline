@@ -9,7 +9,24 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap">
   <link rel="stylesheet" href="{{ url_for('static', path='dashboard.css') }}" />
 </head>
-<body>
+<body class="auth-pending">
+
+  <div id="loginScreen" class="login-screen" hidden>
+    <form id="loginForm" class="login-panel">
+      <div class="login-title">RAG Pipeline</div>
+      <div class="login-sub">登录管控台</div>
+      <label class="field-group">
+        <span class="field-label">用户名</span>
+        <input id="loginUsername" class="input" type="text" autocomplete="username" />
+      </label>
+      <label class="field-group">
+        <span class="field-label">密码</span>
+        <input id="loginPassword" class="input" type="password" autocomplete="current-password" />
+      </label>
+      <button class="btn btn-primary" id="loginBtn" type="submit">登录</button>
+      <div id="loginError" class="login-error"></div>
+    </form>
+  </div>
 
   <aside class="sidebar">
     <div class="sidebar-brand">
@@ -77,6 +94,9 @@
         <button class="btn btn-danger" id="openShutdownBtn">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
           关闭服务
+        </button>
+        <button class="btn btn-ghost" id="logoutBtn" hidden>
+          退出登录
         </button>
       </div>
     </header>
@@ -203,6 +223,23 @@
                     </thead>
                     <tbody></tbody>
                   </table>
+                </div>
+              </div>
+              <div class="field-group auth-settings-field">
+                <label class="field-label">访问控制</label>
+                <div class="auth-settings-grid">
+                  <label class="toggle-label">
+                    <input id="authEnabledInput" type="checkbox" />
+                    <span>启用登录认证</span>
+                  </label>
+                  <div class="field-group">
+                    <label class="field-label" for="authUsernameInput">用户名</label>
+                    <input id="authUsernameInput" class="input" type="text" autocomplete="off" />
+                  </div>
+                  <div class="field-group">
+                    <label class="field-label" for="authPasswordInput">新密码</label>
+                    <input id="authPasswordInput" class="input" type="password" placeholder="留空则不修改" autocomplete="new-password" />
+                  </div>
                 </div>
               </div>
             </div>

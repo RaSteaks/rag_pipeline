@@ -11,6 +11,14 @@ class ServerConfig(BaseModel):
     port: int = 8900
 
 
+class AuthConfig(BaseModel):
+    enabled: bool = False
+    username: str = "admin"
+    password_hash: str = ""
+    session_secret: str = ""
+    session_max_age_seconds: int = 86400
+
+
 class EmbeddingConfig(BaseModel):
     endpoint: str = ""
     model: str = ""
@@ -98,6 +106,7 @@ class ImageDescriptionConfig(BaseModel):
 
 class AppConfig(BaseModel):
     server: ServerConfig = ServerConfig()
+    auth: AuthConfig = AuthConfig()
     embedding: EmbeddingConfig = EmbeddingConfig()
     reranker: RerankerConfig = RerankerConfig()
     indexes: IndexesConfig = IndexesConfig()

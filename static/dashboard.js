@@ -51,7 +51,74 @@ async function callApi(path, method = "GET", body = null) {
   const init = { method, headers: { "Content-Type": "application/json" } };
   if (body) init.body = JSON.stringify(body);
   const r = await fetch(path, init);
-  return r.json();
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401) {
+    showLogin();
+    throw new Error(data.message || "Login required");
+  }
+  if (!r.ok) {
+    throw new Error(data.message || `HTTP ${r.status}`);
+  }
+  return data;
+}
+
+function showLogin() {
+  document.body.classList.remove("auth-pending");
+  document.body.classList.add("auth-login");
+  const screen = document.getElementById("loginScreen");
+  if (screen) screen.hidden = false;
+  document.getElementById("loginPassword")?.focus();
+}
+
+function showDashboard(auth = {}) {
+  document.body.classList.remove("auth-pending", "auth-login");
+  const screen = document.getElementById("loginScreen");
+  if (screen) screen.hidden = true;
+  const logoutBtn = document.getElementById("logoutBtn");
+  if (logoutBtn) logoutBtn.hidden = !auth.enabled;
+}
+
+async function checkAuth() {
+  try {
+    const data = await callApi("/auth/me");
+    if (data.authenticated) {
+      showDashboard(data);
+      return true;
+    }
+  } catch (e) {
+    // Fall through to login.
+  }
+  showLogin();
+  return false;
+}
+
+async function login(event) {
+  event?.preventDefault();
+  const btn = document.getElementById("loginBtn");
+  const err = document.getElementById("loginError");
+  const username = document.getElementById("loginUsername").value.trim();
+  const password = document.getElementById("loginPassword").value;
+  if (err) err.textContent = "";
+  btn.disabled = true;
+  try {
+    const res = await callApi("/auth/login", "POST", { username, password });
+    showDashboard({ enabled: res.enabled !== false });
+    document.getElementById("loginPassword").value = "";
+    await startDashboard();
+  } catch (e) {
+    if (err) err.textContent = "用户名或密码不正确";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function logout() {
+  try {
+    await callApi("/auth/logout", "POST");
+  } catch (e) {
+    // Ignore logout failures and clear the local UI state.
+  }
+  showLogin();
 }
 
 function updateSourceTable(sources) {
@@ -209,6 +276,9 @@ async function loadConfigEditor() {
     const cfg = data.config || {};
     document.getElementById("embeddingModelInput").value = cfg.embedding?.model || "";
     document.getElementById("rerankerModelInput").value = cfg.reranker?.model || "";
+    document.getElementById("authEnabledInput").checked = Boolean(cfg.auth?.enabled);
+    document.getElementById("authUsernameInput").value = cfg.auth?.username || "admin";
+    document.getElementById("authPasswordInput").value = "";
     updateConfigSourcePathTable(cfg.knowledge_sources || []);
     document.getElementById("configRawEditor").value = data.raw_yaml || "";
 
@@ -226,11 +296,17 @@ async function loadConfigEditor() {
 async function saveQuickConfig() {
   const embedding_model = document.getElementById("embeddingModelInput").value.trim();
   const reranker_model = document.getElementById("rerankerModelInput").value.trim();
+  const auth_enabled = document.getElementById("authEnabledInput").checked;
+  const auth_username = document.getElementById("authUsernameInput").value.trim();
+  const auth_password = document.getElementById("authPasswordInput").value;
   const knowledge_sources = collectSourcePathUpdates();
 
   const payload = {
     embedding_model: embedding_model || null,
     reranker_model: reranker_model || null,
+    auth_enabled,
+    auth_username: auth_username || null,
+    auth_password: auth_password || null,
     knowledge_sources,
   };
 
@@ -563,6 +639,8 @@ document.getElementById("syncIncrementalBtn")?.addEventListener("click", () => r
 document.getElementById("syncRebuildBtn")?.addEventListener("click", () => runSync(true));
 document.getElementById("reloadConfigBtn")?.addEventListener("click", reloadConfig);
 document.getElementById("openShutdownBtn")?.addEventListener("click", openShutdownDialog);
+document.getElementById("loginForm")?.addEventListener("submit", login);
+document.getElementById("logoutBtn")?.addEventListener("click", logout);
 document.getElementById("rebuildSourceBtn")?.addEventListener("click", rebuildSource);
 document.querySelectorAll(".loadConfigBtn").forEach((btn) => {
   btn.addEventListener("click", loadConfigEditor);
@@ -581,11 +659,24 @@ document.getElementById("searchQuery")?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") runSearch();
 });
 
-refreshStatus();
-refreshLogs();
-loadConfigEditor();
-setInterval(refreshStatus, 8000);
-setInterval(refreshLogs, 5000);
+let dashboardStarted = false;
+let statusTimer = null;
+let logsTimer = null;
+
+async function startDashboard() {
+  if (!dashboardStarted) {
+    dashboardStarted = true;
+    statusTimer = setInterval(refreshStatus, 8000);
+    logsTimer = setInterval(refreshLogs, 5000);
+  }
+  await refreshStatus();
+  await refreshLogs();
+  await loadConfigEditor();
+}
+
+checkAuth().then((ok) => {
+  if (ok) startDashboard();
+});
 
 document.getElementById("logLevel")?.addEventListener("change", () => refreshLogs(true));
 document.getElementById("shutdownModal")?.addEventListener("click", (event) => {

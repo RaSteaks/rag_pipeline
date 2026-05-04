@@ -5,6 +5,13 @@ server:
   host: "127.0.0.1"
   port: 8900
 
+auth:
+  enabled: false
+  username: "admin"
+  password_hash: ""
+  session_secret: ""
+  session_max_age_seconds: 86400
+
 embedding:
   endpoint: "http://127.0.0.1:8080"
   model: "Qwen3-Embedding-8B"
